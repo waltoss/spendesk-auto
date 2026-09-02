@@ -1,67 +1,153 @@
-# Cursor Billing Invoice Auto-Downloader & Emailer
+# Spendesk expense automation
 
-Automatically downloads the latest Cursor billing invoice and emails it via Mail.app.
+Completes your Spendesk expenses before the card gets blocked.
 
-Uses Playwright with a persistent browser session: first run requires manual Google OAuth login in a headed browser, subsequent runs work headless.
+A card transaction has a ~3-day fuse: the payable only appears in Spendesk on day 2, and
+on day 3 the card is declined — usually discovered at a restaurant rather than at a desk.
+So the actionable window is about 24 hours. This runs every morning, fills everything that
+is mechanical, fetches the invoices it can, and sends **one email** about whatever actually
+needs a human.
 
-![Screenshot of Cursor billing invoice downloader UI](./docs/cursor-billing.png)
+Full reasoning, measurements and API notes: [DESIGN.md](DESIGN.md).
 
+Runtime: **Bun 1.4**, TypeScript throughout, `strict` + `noUncheckedIndexedAccess`. Every
+Spendesk response and the rules file are parsed with [zod](https://zod.dev) at the
+boundary. Playwright drives the browser — that is deliberate, see *Why Playwright* below.
+
+## Usage
+
+```bash
+bun run dry           # decide everything, write nothing — start here
+bun start             # the daily job
+bun run check         # is the session alive and do the rules still resolve?
+bun run reauth        # sign in again (Touch ID + a tap on the Spendesk phone app)
+bun run rules:check   # validate config/rules.ts against the live Spendesk schema
+bun test              # guards, matching, PDF verification (24 tests)
+bun run typecheck     # tsc --noEmit
+
+bun run fetch gcp --amount 266.49    # try one vendor adapter on its own
+```
+
+## Layout
+
+```
+config/rules.ts          the only file to edit for a new supplier or rule
+src/
+  index.ts               CLI: run | fetch | check | reauth | rules:check | schedule
+  run.ts                 the daily job itself (also called by the scheduler)
+  job.ts                 Bun.cron entry point (`scheduled()`)
+  schedule.ts            launchd vs Bun.cron
+  config.ts              loads and validates config/rules.ts
+  rules.ts               the matcher — the only interpreter of the rules file
+  types.ts               QueueItem / Decision / Result — the discriminated unions
+  schemas/
+    spendesk.ts          zod schemas for every Spendesk response
+    rules.ts             zod schema for the rules file
+  spendesk/
+    auth.ts              public-API token; session cookie liveness
+    queue.ts             payments (GraphQL + oracle) and payables (public API)
+    write.ts             buildPatch (the §9 guards, pure) + PATCH/PUT/attachment
+    verify.ts            re-read after writing; completionState when a session exists
+    schema.ts            resolve field/value labels -> ids; validate the rules file
+  vendors/
+    index.ts             registry + shared verify (pdftotext, amount assertion)
+    cursor.ts  gcp.ts
+  browser.ts  reauth.ts  notify.ts  log.ts
+test/                 bun:test — guards, rules, PDF verification
+```
+
+## Adding a supplier or changing a rule
+
+Edit [`config/rules.ts`](config/rules.ts) — that is the only file you should need to
+touch. It is written in the labels you see in Spendesk, never in ids:
+
+```ts
+{
+  name: "Cursor",
+  when: { supplier: /^cursor$/i },
+  fields: { "Catégorie de dépense": "IT Costs" },
+  description: ({ month }) => `Cursor — abonnement IA ${month}`,
+  invoice: "cursor",              // optional: which adapter fetches the PDF
+}
+```
+
+Then `bun run rules:check`. There are two nets under you:
+
+- the **shape** of the file is validated on load, so `suplier:` or `invoice: "gcpp"` fails
+  immediately instead of quietly matching everything;
+- every **label** is resolved against the live schema, so a typo fails loudly with the
+  valid alternatives instead of writing the wrong thing:
+
+```
+✗ rule "Cursor": field "Catégorie de dépense" has no value "Trainings" — valid:
+  Directors, Finance, IT Costs, Management Fees, ..., Training
+```
+
+Matching is first-rule-wins, top to bottom. **Anything unmatched is escalated, never
+guessed** — a wrong field is silently wrong in Theodo's accounts, an escalation costs one
+email.
+
+Rules that need a human use `ask` instead of `fields`: one free-text reply supplies both
+the category and the description, which is the only way to handle meals (`dej networking`
+is Sales, `dej avec Regis medina radical academy` is Training — not inferable from the
+transaction).
+
+## Adding a vendor
+
+Drop a module in `src/vendors/` exporting `loggedOut(page)`, `list(page)` and
+`download(context, page, entry)`, and register it in `src/vendors/index.ts`. A new
+Stripe-billed vendor is mostly a copy of `cursor.ts`.
+
+Verification is shared and not optional: every PDF is read back with `pdftotext` (through
+`Bun.$`) and must state the amount Spendesk charged, or it is deleted and the payable is
+escalated.
+
+## Why Playwright, not Bun.WebView
+
+Bun 1.4 ships `Bun.WebView`, and it was tried. It cannot replace Playwright here:
+
+- `new Bun.WebView({ headless: false })` throws *"headless: false is not yet
+  implemented"* — there is no visible window, so it cannot host the re-auth explainer;
+- the sessions live in `.browser-data/`, a **Chrome** persistent profile launched with
+  `channel: "chrome"` and `chromiumSandbox: true`, because macOS will not hand a passkey
+  request to Playwright's bundled Chrome for Testing (DESIGN §11). WebView's `dataStore`
+  is a different store.
 
 ## Setup
 
 ```bash
-npm install
-npx playwright install chromium
+bun install
+bunx playwright install chrome
+brew install poppler           # pdftotext
 ```
 
-## Usage
+`.spendesk-api` holds the public-API credentials, two lines:
 
-### First time: log in manually
-
-```bash
-npm run login
+```
+ID=...
+Secret=...
 ```
 
-A Chromium window opens and navigates to the Cursor billing page. Complete Google OAuth login manually. Once authenticated, the session is saved to `.browser-data/` and the latest invoice is downloaded and emailed.
+Then `bun run reauth` once to sign in, and `bun run schedule` to run it daily at 08:00
+(launchd). `bun run schedule:bun` registers the same job through `Bun.cron` instead — also
+launchd underneath, but it logs to `/tmp/bun.cron.spendesk-daily.*.log` rather than
+`logs/`, which is why the explicit plist is the default.
 
-### Subsequent runs (headless)
+## What it needs from you
 
-```bash
-npm start
-```
+- **Re-authentication.** Assume every couple of weeks, until a month of run logs shows the
+  real cadence. Touch ID, then approve on the Spendesk phone app — PSD2, not scriptable.
+- **Answering the digest.** About 4 emails a month, never more than one a day.
 
-Reuses the persisted session — no browser window needed. Downloads the latest invoice to `invoices/` and sends it via Mail.app.
+## Safety
 
-If the session has expired, the script exits with a message to re-run `npm run login`.
+The Spendesk API credential is company-wide and `PATCH` replaces line items wholesale, so
+it could in principle reach someone else's €50k invoice. The guards in
+`src/spendesk/write.ts` prevent that — the payable must be yours, must still be
+`toPrepare`, must not be exported, must carry a version, every line item must have a gross
+amount, the amounts must still add up, and the tax account is preserved verbatim. They are
+covered by `bun test`, and `dry` is a *required* argument on every function that writes, so
+no call site can forget to thread `--dry` through.
 
-### Schedule monthly
-
-```bash
-npm run schedule
-```
-
-Installs a launchd job that runs on the 3rd of each month at 10:00 AM.
-
-To remove the schedule:
-
-```bash
-npm run unschedule
-```
-
-## Configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EMAIL_TO` | `thomas.walter@theodo.com` | Recipient email address |
-
-```bash
-EMAIL_TO=someone@example.com npm start
-```
-
-## How it works
-
-1. Launches Chromium with a persistent context (cookies/session saved in `.browser-data/`)
-2. Navigates to `https://cursor.com/dashboard?tab=billing`
-3. Finds invoice links on the page and downloads the latest PDF
-4. Falls back to clicking download buttons on Stripe invoice pages, or printing the page as PDF
-5. Sends the PDF as an attachment via Mail.app using AppleScript
+Everything runs locally with your own credentials. Session cookies stay in
+`.browser-data/` on your Mac; this is deliberately not a hosted service.

@@ -2,3 +2,7 @@ node_modules/
 .browser-data/
 invoices/
 *.log
+.spendesk-api
+test/fixtures/*.pdf
+logs/
+test-ts/fixtures/*.pdf

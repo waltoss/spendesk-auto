@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The TypeScript job. Same schedule and same log paths as com.theodo.spendesk.plist,
+  which runs the JavaScript one; only the interpreter differs. Install with
+  `bun run schedule`, remove with `bun run unschedule`.
+
+  Daily, not monthly. A payable appears on day 2 and the card is blocked on day 3, so the
+  actionable window is about 24 hours (DESIGN §1). 08:00 puts the digest in the inbox
+  before the working day, leaving a full day to answer it.
+
+  RunAtLoad is deliberately absent: this can open a browser, and it should not do that
+  while the Mac is still logging in.
+
+  Bun.cron would register an equivalent job by itself (`bun run schedule:bun`), but it
+  writes its output to /tmp/bun.cron.spendesk-daily.*.log instead of logs/, so this
+  explicit plist stays the default.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.theodo.spendesk</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/waltoss/.bun/bin/bun</string>
+    <string>src/index.ts</string>
+    <string>run</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/waltoss/Code/Theodo/Playground/cursor-billing</string>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>8</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/waltoss/Code/Theodo/Playground/cursor-billing/logs/stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/waltoss/Code/Theodo/Playground/cursor-billing/logs/stderr.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- pdftotext lives in /opt/homebrew/bin; without it every PDF is "unreadable". -->
+    <key>PATH</key>
+    <string>/Users/waltoss/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>

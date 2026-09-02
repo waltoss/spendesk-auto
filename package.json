@@ -1,19 +1,32 @@
 {
-  "name": "cursor-billing",
-  "version": "1.0.0",
-  "description": "Auto-download Cursor billing invoices and email them",
+  "name": "spendesk-expense-automation",
+  "version": "3.0.0",
+  "description": "Completes Spendesk expenses before the 3-day fuse blocks the card: fills the mandatory fields, writes the description, fetches and attaches the invoice, and asks about whatever it cannot know.",
   "type": "module",
+  "module": "src/index.ts",
   "scripts": {
-    "start": "node src/index.mjs",
-    "login": "node src/index.mjs --login",
-    "schedule": "ln -sf \"$(pwd)/launchd/com.theodo.cursor-billing.plist\" ~/Library/LaunchAgents/ && launchctl load -w ~/Library/LaunchAgents/com.theodo.cursor-billing.plist && echo 'Scheduled: runs on the 3rd of each month at 10:00 AM'",
-    "unschedule": "launchctl unload ~/Library/LaunchAgents/com.theodo.cursor-billing.plist 2>/dev/null; rm -f ~/Library/LaunchAgents/com.theodo.cursor-billing.plist && echo 'Unscheduled'",
-    "test:schedule": "launchctl start com.theodo.cursor-billing && sleep 30 && echo '--- stdout ---' && cat stdout.log && echo '--- stderr ---' && cat stderr.log"
+    "start": "bun src/index.ts run",
+    "run": "bun src/index.ts run",
+    "dry": "bun src/index.ts run --dry",
+    "check": "bun src/index.ts check",
+    "reauth": "bun src/index.ts reauth",
+    "rules:check": "bun src/index.ts rules:check",
+    "fetch": "bun src/index.ts fetch",
+    "test": "bun test test",
+    "typecheck": "tsc --noEmit",
+    "schedule": "ln -sf \"$(pwd)/launchd/com.theodo.spendesk.plist\" ~/Library/LaunchAgents/ && launchctl load -w ~/Library/LaunchAgents/com.theodo.spendesk.plist && echo 'Scheduled: runs daily at 08:00'",
+    "unschedule": "launchctl unload ~/Library/LaunchAgents/com.theodo.spendesk.plist 2>/dev/null; rm -f ~/Library/LaunchAgents/com.theodo.spendesk.plist && echo 'Unscheduled'",
+    "schedule:bun": "bun src/index.ts schedule",
+    "unschedule:bun": "bun src/index.ts unschedule",
+    "schedule:show": "bun src/index.ts schedule:show"
   },
-  "keywords": [],
-  "author": "",
   "license": "ISC",
   "dependencies": {
-    "playwright": "^1.58.2"
+    "playwright": "^1.58.2",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "typescript": "^7.0.2"
   }
 }
