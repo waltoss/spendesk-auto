@@ -1,5 +1,5 @@
 {
-  "name": "spendesk-expense-automation",
+  "name": "spendesk-auto",
   "version": "3.0.0",
   "description": "Completes Spendesk expenses before the 3-day fuse blocks the card: fills the mandatory fields, writes the description, fetches and attaches the invoice, and asks about whatever it cannot know.",
   "type": "module",
