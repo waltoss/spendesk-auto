@@ -1,5 +1,9 @@
 # Spendesk expense automation — design & implementation spec
 
+> **Superseded in part.** The session-lifetime and payable-timing figures below were
+> re-measured on 2026-09-02 and were wrong. See [REDESIGN.md](REDESIGN.md) §2 for the
+> corrected numbers and §3 for the proposed change to how logins are triggered.
+
 Status: **rebuilt** (2026-09-02). All five steps of §15 are built. GCP retrieval is proven end to
 end; `run` without `--dry` and the Cursor adapter have not yet been exercised since the rebuild.
 Everything below is either measured against the live account or explicitly flagged as unknown.
@@ -398,15 +402,39 @@ never rendered, saved and reported as success. That fallback does not survive th
 | Google (GCP) | OAuth in the browser profile | months |
 | Cursor | own `cursor.com` cookie | months |
 
-**Cookie expiry is not session lifetime.** `SPX_ACCESS_TOKEN` / `SPX_REFRESH_TOKEN` / `SPX_DEVICE`
-are all persistent with 365-day expiry, yet on 2026-09-02 — 14 days after login, with nothing having
-touched the account in between — the session was dead and loading the SPA redirected to
-`/auth/login` instead of refreshing.
+**Cookie expiry is not session lifetime, and the real number is 60 minutes.** Measured
+2026-09-02 by decoding the JWTs in the cookie jar:
 
-Unknown: whether it died from **idleness**. A sliding session would be kept alive by the daily job,
-which had not been running. Assume the pessimistic case (**re-login every ~2 weeks**) until a month
-of daily runs shows otherwise, and log every session death with the elapsed time so the real cadence
-becomes visible.
+```
+SPX_ACCESS_TOKEN    ttl =  60 min     cookie expiry 1 year
+SPX_REFRESH_TOKEN   ttl = 600 min     cookie expiry 1 year
+```
+
+Both cookies persist for a year, which is why every earlier estimate (4x/year, then
+fortnightly, then "2.4 hours, probably load-related") was wrong. The session dies exactly
+one hour after login.
+
+`sessionAlive`'s "load the SPA and retry" does not help: with an expired access token the
+app calls `/api/user`, takes the 401 and redirects to `/auth/login`. It refreshes on a
+**timer while open**, which a once-a-day job can never hit. So that retry path is, in
+practice, dead code.
+
+**Consequence:** every scheduled run finds an expired token and falls back to payables.
+Fields and receipts still get written through the public API, but descriptions do not, and
+the day-0 window of §2b is lost. Verified by triggering the launchd job: it exited 0,
+logged correctly, and reported `no Spendesk session — falling back to payables`.
+
+**Open: the refresh endpoint.** The SPA must call something to trade the 600-minute refresh
+token for a new access token, and calling it on a schedule (every ~8h) would keep the
+session alive — indefinitely, if the refresh is rolling. Not yet found. Nine plausible
+paths under `/api/*` all return a generic `401` from the auth middleware, indistinguishable
+from "exists but needs a valid token"; `/auth/*` variants 404; and the app bundle
+(`entries/app.<hash>.js`, 592 lazy chunks) yields no endpoint by grep. The reliable route is
+the one that cracked the receipt upload and the custom fields: sign in, keep the app open
+~55 minutes, and capture the call when the timer fires.
+
+**The tokens are IP-bound** — `ip` and `refreshTokenIp` claims. Changing network or VPN
+kills the session regardless of TTL.
 
 This raises the value of the daily check: it converts "blocked card at a restaurant" into "one
 30-second chore at breakfast, at worst fortnightly".

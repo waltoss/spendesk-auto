@@ -149,6 +149,32 @@ export async function sessionAlive(
 }
 
 /** Call the internal app API with the browser's session cookie. */
+/**
+ * One cheap authenticated request, to keep the session from going cold.
+ *
+ * The session is not a fixed lifetime — it slides. A captured HAR shows it surviving
+ * 1h42 of idle and then dying after 1h17, with no refresh endpoint called anywhere: the
+ * app simply stays alive because it keeps making requests. A once-a-day job is 24 hours
+ * of silence, which is why it always finds a dead session and degrades to payables.
+ *
+ * So instead of resurrecting the session, don't let it die. `/api/user` is the smallest
+ * authenticated endpoint the app itself calls on every load.
+ *
+ * Returns the time since the last known-good ping, so the run log shows how long the
+ * session actually holds — which is the number that decides the ping interval.
+ */
+export async function keepWarm(context: BrowserContext): Promise<{ alive: boolean; status: number }> {
+  try {
+    const res = await context.request.get(`${INTERNAL_API}/api/user`, {
+      headers: { origin: APP, referer: `${APP}/` },
+      timeout: 15_000,
+    });
+    return { alive: res.ok(), status: res.status() };
+  } catch {
+    return { alive: false, status: 0 };
+  }
+}
+
 export async function internalApi(
   context: BrowserContext,
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
