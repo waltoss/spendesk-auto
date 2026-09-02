@@ -46,7 +46,7 @@
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/Users/waltoss/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>/Users/waltoss/.bun/bin:/Users/waltoss/.local/share/fnm/node-versions/v24.13.0/installation/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
 </dict>
 </plist>

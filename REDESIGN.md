@@ -86,6 +86,36 @@ login, and gives 24 hours' notice.
 The decline emails are the only honest success metric: **declines per month, before and
 after**. Three in the last 45 days.
 
+**Trap: email amounts are the billed EUR amount, not the native one.** A USD 22.00 Cursor
+charge arrives as "New purchase of €19.00". So matching an email to a payment must use
+`functionalAmount` (payable) or `amount_billed` (payment) — never `amount` /
+`amount_declared`. This is the opposite of the rule for matching *invoices*, where DESIGN
+§8.6 requires the native amount because EUR moves with FX. Both rules are right, for
+different joins.
+
+**Access: `gws`, scoped to `gmail.readonly` only.** It is the Gmail API with credentials
+already provisioned in a GCP project inside the theodo.fr org, which means the consent
+screen can be Internal — no 7-day refresh-token expiry, no Google verification for a
+restricted scope. Verified least-privilege: Gmail succeeds, Drive returns
+`insufficientPermissions`.
+
+Two implementation requirements, both learned the hard way:
+
+- **Resolve the binary durably.** The `gws` on an interactive PATH lives in
+  `~/.local/state/fnm_multishells/<pid>_<timestamp>/bin`, one of ~2000 per-shell
+  directories that do not exist for a launchd job. Use
+  `~/.local/share/fnm/node-versions/*/installation/bin/gws`, newest first, and put that
+  directory on `PATH` for the child — `gws` is a node script and needs its own `node`.
+- **Never run it with a stripped environment.** With `env -i` it cannot reach the keychain,
+  fails to decrypt, and *deletes* `credentials.enc`, forcing an interactive re-login.
+
+**Open: does the grant survive?** A previous broader grant died with `invalid_grant:
+invalid_rapt` — Google's ReAuth Proof Token, which is tied to the Workspace admin's Cloud
+session-length policy. The hypothesis is that a Gmail-only grant is not subject to it. That
+is unverified: if Theodo enforces reauth across all OAuth grants, Gmail needs periodic
+interactive login too, and the session-free path is not actually session-free. **Watch for
+a recurrence over the coming days before relying on this.**
+
 **Caveat on the subscription subject line.** It agreed with `subscription_id` on 45 of 46
 payments, but the one mismatch (€135.61) over-claimed — email said subscription, the API
 said not. That is the unsafe direction: trusting it would silently skip a payment that
