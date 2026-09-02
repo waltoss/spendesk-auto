@@ -30,7 +30,7 @@
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/waltoss/Code/Theodo/Playground/cursor-billing</string>
+  <string>/Users/waltoss/Code/Theodo/Playground/spendesk-expense-automation</string>
 
   <key>StartCalendarInterval</key>
   <dict>
@@ -41,9 +41,9 @@
   </dict>
 
   <key>StandardOutPath</key>
-  <string>/Users/waltoss/Code/Theodo/Playground/cursor-billing/logs/stdout.log</string>
+  <string>/Users/waltoss/Code/Theodo/Playground/spendesk-expense-automation/logs/stdout.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/waltoss/Code/Theodo/Playground/cursor-billing/logs/stderr.log</string>
+  <string>/Users/waltoss/Code/Theodo/Playground/spendesk-expense-automation/logs/stderr.log</string>
 
   <key>EnvironmentVariables</key>
   <dict>
