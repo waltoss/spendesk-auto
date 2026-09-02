@@ -48,7 +48,8 @@ async function cmdKeepWarm(): Promise<void> {
       // Worth an explicit line: the whole point is to notice the moment it stops working.
       log.fail(`session went cold${gapMin === null ? "" : ` after ${gapMin.toFixed(0)} min`} (HTTP ${status}) — run: bun run reauth`);
       log.record("went-cold", { gapMin: gapMin === null ? null : Math.round(gapMin), status });
-      process.exitCode = 1;
+      // Deliberately exit 0: a cold session is an expected state, not a failure, and
+      // launchd throttles jobs that keep exiting non-zero. The log is the record.
     }
   } finally {
     await closeQuietly(context);
