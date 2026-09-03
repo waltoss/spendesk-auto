@@ -30,7 +30,8 @@ import { openContext } from "./browser.ts";
 import { loggedOut as cursorLoggedOut } from "./vendors/cursor.ts";
 import { sessionAlive, APP } from "./spendesk/auth.ts";
 import { resolveMember } from "./spendesk/schema.ts";
-import { listIncompletePayables } from "./spendesk/queue.ts";
+import { listIncompletePayables, recentBilledAmounts } from "./spendesk/queue.ts";
+import { readSignals } from "./signals/index.ts";
 import { requiredFields } from "./rules.ts";
 import * as log from "./log.ts";
 
@@ -42,6 +43,9 @@ interface Surface {
   recheck: (context: BrowserContext) => Promise<boolean>;
   pollMs: number;
 }
+
+/** How stale a vendor sign-in check may be before it is worth three page loads again. */
+const VENDOR_RECHECK_DAYS = 7;
 
 const GOOGLE_PAYMENTS = "https://payments.google.com/gp/w/u/0/home/subscriptionsandservices";
 const ANTHROPIC_BILLING = "https://platform.claude.com/settings/billing";
@@ -146,6 +150,10 @@ const SURFACES: Surface[] = [
 interface PendingWork {
   count: number | null;
   soonestHours: number | null;
+  /** Charges seen by email that Spendesk has not turned into a payable yet. Without this
+   *  the window says "0 expenses waiting" on precisely the day a charge is too new to be
+   *  in the payable view — which is the day the email asked you to come here. */
+  unseen: number;
 }
 
 async function pendingWork(): Promise<PendingWork> {
@@ -158,14 +166,27 @@ async function pendingWork(): Promise<PendingWork> {
     });
     const incomplete = queue.filter((p) => p.completionState === "incomplete");
     const soonest = incomplete.map((p) => p.hoursRemaining ?? Infinity).sort((a, b) => a - b)[0] ?? null;
-    return { count: incomplete.length, soonestHours: soonest === Infinity ? null : soonest };
+
+    // Same join as the run: the emails quote the billed amount, never the native one.
+    let unseen = 0;
+    const { signals } = await readSignals({ days: 3 });
+    if (signals) {
+      const billed = await recentBilledAmounts({ memberId: member.id });
+      unseen = signals.filter(
+        (sig) =>
+          sig.kind === "purchase" &&
+          !billed.some((b) => b.currency === sig.currency && Math.abs(b.amount - sig.amount) < 0.005),
+      ).length;
+    }
+    return { count: incomplete.length, soonestHours: soonest === Infinity ? null : soonest, unseen };
   } catch {
     // The public API key may also need attention; say so rather than guessing zero.
-    return { count: null, soonestHours: null };
+    return { count: null, soonestHours: null, unseen: 0 };
   }
 }
 
 const shell = (body: string): string => `<!doctype html><meta charset="utf-8">
+<title>Spendesk expense automation</title>
 <style>
   :root { color-scheme: light }
   * { box-sizing: border-box }
@@ -191,13 +212,16 @@ const shell = (body: string): string => `<!doctype html><meta charset="utf-8">
 </style>
 <div class="card">${body}</div>`;
 
-function explainPage({ count, soonestHours }: PendingWork, dead: Surface[]): string {
+function explainPage({ count, soonestHours, unseen }: PendingWork, dead: Surface[]): string {
   const urgent = soonestHours !== null && soonestHours < 24;
   const stat =
     count === null
       ? `<div class="stat"><b>?</b><span>Couldn't read the queue — the public API key may also need attention.</span></div>`
       : count === 0
-        ? `<div class="stat"><b>0</b><span>Nothing waiting right now. Signing in keeps tomorrow's run working.</span></div>`
+        ? unseen > 0
+          ? `<div class="stat"><b>${unseen}</b><span>recent charge${unseen > 1 ? "s are" : " is"} not in Spendesk's
+               accounting view yet. Signing in reaches ${unseen > 1 ? "them" : "it"} about a day early.</span></div>`
+          : `<div class="stat"><b>0</b><span>Nothing waiting right now. Signing in keeps tomorrow's run working.</span></div>`
         : `<div class="stat ${urgent ? "urgent" : ""}"><b>${count}</b><span>expense${count > 1 ? "s" : ""} waiting to be completed${
             soonestHours !== null ? ` — the most urgent is due in <b>${Math.max(0, Math.round(soonestHours))}h</b>` : ""
           }.</span></div>`;
@@ -258,14 +282,43 @@ export async function reauth({
     const page = context.pages()[0] ?? (await context.newPage());
     await page.setContent(checkingPage(), { waitUntil: "domcontentloaded" }).catch(() => {});
 
+    const spendesk = SURFACES.find((s) => s.name === "Spendesk")!;
+    const vendors = SURFACES.filter((s) => s !== spendesk);
     const dead: Surface[] = [];
-    for (const surface of SURFACES) {
-      const alive = await surface.alive(context);
-      (alive ? log.ok : log.warn)(`${surface.name}: ${alive ? "signed in" : "signed out"}`);
-      if (!alive || force) dead.push(surface);
+
+    // Spendesk first, because it is the one that expires hourly and the only one that can
+    // be checked without loading a page.
+    const spendeskAlive = await spendesk.alive(context);
+    (spendeskAlive ? log.ok : log.warn)(`${spendesk.name}: ${spendeskAlive ? "signed in" : "signed out"}`);
+    if (!spendeskAlive || force) dead.push(spendesk);
+
+    // Vendor sessions last months. Probing all three on every visit meant three full page
+    // loads — Cursor and Anthropic are ~10s each, behind a Cloudflare challenge and an
+    // hCaptcha — to re-learn something that had not changed, stealing focus from the very
+    // window asking you to sign in. So check them rarely, and let a failed invoice fetch
+    // re-arm the probe rather than relying on the clock alone.
+    const lastCheck = log.lastEvent("vendors-checked");
+    const vendorDays = lastCheck ? (Date.now() - new Date(lastCheck.at).getTime()) / 864e5 : Infinity;
+    // A run that hit a signed-out vendor re-arms the probe immediately, so the skip cannot
+    // hide the one case that needs it.
+    const reported = log.lastEvent("vendor-signed-out");
+    const reportedSinceCheck =
+      reported !== null && (!lastCheck || new Date(reported.at).getTime() > new Date(lastCheck.at).getTime());
+    if (force || reportedSinceCheck || vendorDays > VENDOR_RECHECK_DAYS) {
+      for (const surface of vendors) {
+        const alive = await surface.alive(context);
+        (alive ? log.ok : log.warn)(`${surface.name}: ${alive ? "signed in" : "signed out"}`);
+        if (!alive || force) dead.push(surface);
+      }
+      if (!vendors.some((v) => dead.includes(v))) log.record("vendors-checked", {});
+      // Those probes each opened and closed a tab, which takes focus in headed Chrome.
+      await page.bringToFront().catch(() => {});
+    } else {
+      log.step(
+        `vendor sign-ins checked ${vendorDays.toFixed(1)} days ago — skipping` +
+          ` (re-checked after ${VENDOR_RECHECK_DAYS} days, or as soon as a run finds one signed out)`,
+      );
     }
-    // Each probe opened and closed a tab, which takes focus in headed Chrome. Come back.
-    await page.bringToFront().catch(() => {});
     if (!dead.length) {
       log.ok("nothing to do");
       log.record("session-alive", {});

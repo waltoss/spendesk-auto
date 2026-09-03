@@ -258,6 +258,10 @@ export async function runDaily({ dry }: { dry: boolean }): Promise<RunSummary> {
           const got = await fetchInvoice(context, decision.invoice, payment);
           if (!got.ok) {
             log.fail(`invoice: ${got.error}`);
+            // A dead vendor session must re-arm the vendor probe, which reauth otherwise
+            // skips for a week. Without this the two would deadlock: the fetch says "run
+            // reauth", and reauth says "nothing to do".
+            if (/not signed in/i.test(got.error)) log.record("vendor-signed-out", { vendor: decision.invoice });
             escalations.push({ payment, reason: `could not retrieve the invoice: ${got.error}` });
           } else {
             if (payment.kind === "payment")
