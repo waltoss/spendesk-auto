@@ -18,10 +18,7 @@
     "unschedule": "launchctl unload ~/Library/LaunchAgents/com.theodo.spendesk.plist 2>/dev/null; rm -f ~/Library/LaunchAgents/com.theodo.spendesk.plist && echo 'Unscheduled'",
     "schedule:bun": "bun src/index.ts schedule",
     "unschedule:bun": "bun src/index.ts unschedule",
-    "schedule:show": "bun src/index.ts schedule:show",
-    "keep-warm": "bun src/index.ts keep-warm",
-    "warm:schedule": "ln -sf \"$(pwd)/launchd/com.theodo.spendesk.warm.plist\" ~/Library/LaunchAgents/ && launchctl load -w ~/Library/LaunchAgents/com.theodo.spendesk.warm.plist && echo \"Keep-warm: every 30 min\"",
-    "warm:unschedule": "launchctl unload ~/Library/LaunchAgents/com.theodo.spendesk.warm.plist 2>/dev/null; rm -f ~/Library/LaunchAgents/com.theodo.spendesk.warm.plist && echo \"Keep-warm unscheduled\""
+    "schedule:show": "bun src/index.ts schedule:show"
   },
   "license": "ISC",
   "dependencies": {

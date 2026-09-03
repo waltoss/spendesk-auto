@@ -13,7 +13,7 @@
 import { defaults, rules, me } from "./config.ts";
 import { loadSchema, resolveMember, validateRules } from "./spendesk/schema.ts";
 import { requiredFields } from "./rules.ts";
-import { sessionAlive, keepWarm } from "./spendesk/auth.ts";
+import { sessionAlive } from "./spendesk/auth.ts";
 import { closeQuietly, openContext } from "./browser.ts";
 import { adapterFor, fetchInvoice, isVendor, VENDORS } from "./vendors/index.ts";
 import { reauth } from "./reauth.ts";
@@ -25,37 +25,6 @@ import * as log from "./log.ts";
 const argv = Bun.argv.slice(2);
 const command = argv[0] ?? "run";
 const DRY = argv.includes("--dry");
-
-// ----------------------------------------------------------------------- keep-warm
-
-/**
- * Ping the session so it never goes cold. Scheduled every 30 minutes.
- *
- * Deliberately silent and cheap: one request, no browser page, no writes. It records the
- * gap since the previous successful ping, so `logs/runs.jsonl` accumulates the evidence
- * for how long the session really holds — the number that should set the interval.
- */
-async function cmdKeepWarm(): Promise<void> {
-  const context = await openContext({ headless: true });
-  try {
-    const previous = log.lastEvent("warm");
-    const gapMin = previous ? (Date.now() - new Date(previous.at).getTime()) / 6e4 : null;
-
-    const { alive, status } = await keepWarm(context);
-    if (alive) {
-      log.ok(`session warm${gapMin === null ? "" : ` (held ${gapMin.toFixed(0)} min since last ping)`}`);
-      log.record("warm", { gapMin: gapMin === null ? null : Math.round(gapMin) });
-    } else {
-      // Worth an explicit line: the whole point is to notice the moment it stops working.
-      log.fail(`session went cold${gapMin === null ? "" : ` after ${gapMin.toFixed(0)} min`} (HTTP ${status}) — run: bun run reauth`);
-      log.record("went-cold", { gapMin: gapMin === null ? null : Math.round(gapMin), status });
-      // Deliberately exit 0: a cold session is an expected state, not a failure, and
-      // launchd throttles jobs that keep exiting non-zero. The log is the record.
-    }
-  } finally {
-    await closeQuietly(context);
-  }
-}
 
 // --------------------------------------------------------------------- rules:check
 
@@ -218,7 +187,6 @@ const commands: Record<string, () => Promise<void>> = {
     await reauth({ force: argv.includes("--force") });
   },
   "rules:check": cmdRulesCheck,
-  "keep-warm": cmdKeepWarm,
   schedule,
   unschedule,
   "schedule:show": describeSchedule,

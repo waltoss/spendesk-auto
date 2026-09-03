@@ -66,8 +66,8 @@ Rules:
    once the payable exists.
 3. **Ask for a login only when something is actually blocked on it**, and say what. Never
    "please authenticate" with no reason.
-4. **Keep the session warm while the laptop is awake** so that a login made at 09:00 is
-   still good at 18:00.
+4. ~~Keep the session warm while the laptop is awake~~ — attempted and removed, see §6.
+   `StartInterval` cannot fire during sleep, so this could never reach the morning.
 
 ## 4. Signals from Gmail
 
@@ -158,21 +158,29 @@ Evidence is n=4 and the mechanism is unconfirmed. **Verify before paying the con
 cost**: open the LLM Gateway subscription and check the description lives on the
 subscription itself rather than being copied once.
 
-## 6. Keep-warm, and its limit
+## 6. Keep-warm: removed
 
-Built and scheduled (`keep-warm`, `com.theodo.spendesk.warm`, `StartInterval 1800`).
+Built, scheduled (`StartInterval 1800`, `RunAtLoad`) — and it never ran once. `runs = 0`,
+`pended nondemand spawn = speculative`, no `warm.log` ever created.
 
-It keeps the session alive through a working day, so one login in the morning lasts until
-evening. **It cannot survive sleep**: launchd does not fire during sleep, it runs missed
-jobs on wake. Eight hours overnight will always kill the session.
+The reason not to debug it is in `man launchd.plist`:
 
-So: keep-warm removes logins *during* the day. It does not remove the morning one. Only
-§3's split removes that, by not needing a session to answer the common question.
+> **StartInterval** — If the system is asleep during the time of the next scheduled
+> interval firing, that interval will be missed due to shortcomings in kqueue(3).
 
-Unverified as of writing: whether 30 minutes is enough, and whether the session survives
-indefinitely with pinging or dies at the 600-minute refresh-token ceiling regardless.
-`logs/runs.jsonl` records every ping gap (`warm`) and every death (`went-cold`) — read it
-before tuning the interval.
+The session lives 60 minutes. The laptop sleeps overnight. So even a working keep-warm
+could not carry a session to morning: it was written to solve the one problem its own
+primitive cannot solve. Deleted rather than fixed.
+
+The contrast matters, because the daily job uses the other key:
+
+> **StartCalendarInterval** — Unlike cron which skips job invocations when the computer is
+> asleep, launchd will start the job the next time the computer wakes up. If multiple
+> intervals transpire before the computer is woken, those events will be coalesced into one
+> event upon wake from sleep.
+
+So the trigger is solved: open the Mac at 09:15 and the 08:00 job runs, once, on wake.
+What is not solved is that it wakes into a dead session — see §7.
 
 ## 7. What to build
 

@@ -107,7 +107,7 @@ const SURFACES: Surface[] = [
     // allowRefresh: false on purpose. The refresh path (auth.ts) revives a session by
     // navigating to /app — which, when the session is dead, *is* the login page. It would
     // open a real login form in front of the user and close it 4s later, before the
-    // explainer had said a word. Reviving a cold session is keep-warm's job, not this one's.
+    // explainer had said a word.
     alive: (context) => sessionAlive(context, { allowRefresh: false }),
     recheck: (context) => sessionAlive(context, { allowRefresh: false }),
     pollMs: 2500, // one cheap API request
