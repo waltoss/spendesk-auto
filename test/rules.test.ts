@@ -12,6 +12,7 @@ const payment = (over: Partial<Matchable>): Matchable => ({
   amount: 0,
   currency: "EUR",
   paidAt: "2026-08-26",
+  cardId: null,
   ...over,
 });
 
@@ -98,4 +99,28 @@ test("a reply that answers nothing derives nothing", () => {
   const d = expectKind(match(payment({ supplier: "RESTAURANTS DIVERS", amount: 31 }), { defaults, rules }), "ask");
   const { fields } = deriveFromReply("thanks", d.rule.ask?.derive);
   expect(fields).toEqual({});
+});
+
+test("a project card matches even with no supplier, description or amount", () => {
+  // The day-0 shape: an authorisation, before Spendesk knows the merchant.
+  const d = match(payment({ cardId: "eniy627_5pp600", amount: 120, currency: "USD" }), { defaults, rules });
+  const auto = expectKind(d, "auto");
+  expect(auto.rule.name).toBe("Radical Academy card");
+  expect(auto.fields["Catégorie de dépense"]).toBe("Training");
+});
+
+test("a card rule never matches a payable, which has no card", () => {
+  // The payables path reports cardId: null. If `when.card` matched that, every unmatched
+  // payable would be filed under one project's category — silently wrong in the accounts.
+  expect(match(payment({ cardId: null, amount: 120, currency: "USD" }), { defaults, rules }).kind).toBe("unknown");
+});
+
+test("a supplier rule still wins over the card it happens to share", () => {
+  // GCP Radical Academy is on the same card, but has its own description and invoice
+  // adapter; first-rule-wins must keep it ahead of the catch-all card rule.
+  const d = match(
+    payment({ cardId: "eniy627_5pp600", supplier: "Google Cloud", amount: 406.98 }),
+    { defaults, rules },
+  );
+  expect(d.kind).toBe("resolve"); // GCP still needs its billing account resolved
 });

@@ -1,32 +1,28 @@
 // Where the Spendesk notification emails come from.
 //
-// Gmail via gws is primary: it is fast (seconds), correct, and its failures are loud —
-// a 401 with a named reason. Mail.app is the more appealing idea, because nothing local
-// can have its token revoked, but in practice it is fiddly: query cost swings from 0.1s to
-// minutes depending on which mailbox reference is used, and a wrong reference returns an
-// empty list rather than an error. An empty list reads as "nothing needs you", which is
-// the one failure this project cannot tolerate.
+// Mail.app, and only Mail.app. There was a Gmail API reader here, through the `gws` CLI,
+// and it was removed: that credential is shared with unrelated tooling, so re-issuing it
+// for another purpose silently narrowed the scopes this needed, and the binary moved
+// install location, which broke resolution outright and — because the reader was
+// fail-soft — reported "no signals" rather than an error. A source that other work can
+// invalidate, silently, is the wrong foundation for "does anything need me?".
 //
-// So Mail.app stays as a fallback for when the Gmail grant dies (see REDESIGN.md §4 on
-// invalid_rapt), and is used only when it actually returns something.
+// Mail.app can do the job only because a Gmail-side filter labels the mail server-side,
+// which leaves one small, deterministically-named mailbox to read. Without it this source
+// scanned every mailbox, took 100s+, and returned an empty list when handed a bad mailbox
+// reference — and empty reads as "nothing needs you", the one wrong answer here.
+//
+// With no second source there is nothing to cross-check against, so the distinction that
+// matters is encoded in the type: `signals: null` means "could not look", which is not the
+// same as "nothing is waiting" and must never be reported as calm.
 import * as mail from "./mail.ts";
-import * as gmail from "./gmail.ts";
-import type { Signal } from "./gmail.ts";
-import * as log from "../log.ts";
+import type { Signal } from "./classify.ts";
 
-export type { Signal } from "./gmail.ts";
-export { blockWarning, classify, parseAmount } from "./gmail.ts";
+export type { Signal } from "./classify.ts";
+export { blockWarning, classify, parseAmount } from "./classify.ts";
 
-export async function readSignals(opts: { days?: number } = {}): Promise<{ signals: Signal[]; source: string }> {
-  const fromGmail = await gmail.readSignals(opts);
-  if (fromGmail.length) return { signals: fromGmail, source: "gmail" };
-
-  // Gmail returned nothing: either a genuinely quiet week or a dead grant. Ask Mail.app
-  // rather than assume the quiet week — being wrong here means missing a blocked card.
-  const fromMail = await mail.readSignals(opts);
-  if (fromMail && fromMail.length) {
-    log.warn("Gmail returned nothing but Mail.app did — check the Gmail grant");
-    return { signals: fromMail, source: "Mail.app" };
-  }
-  return { signals: fromGmail, source: "gmail" };
+export async function readSignals(
+  opts: { days?: number } = {},
+): Promise<{ signals: Signal[] | null; source: string }> {
+  return { signals: await mail.readSignals(opts), source: "Mail.app" };
 }

@@ -161,6 +161,9 @@ export const PaymentNode = z.looseObject({
   amount_declared: z.union([z.string(), z.number()]).nullish(),
   currency_declared: z.string().nullish(),
   paid_at: z.string().nullish(),
+  // The card authorisation. paid_at is the later settlement, and is null until it happens.
+  created_at: z.string().nullish(),
+  card_id: z.string().nullish(),
   invoices: z.looseObject({ total: z.number().nullish() }).nullish(),
   invoice_lost: z.boolean().nullish(),
   invoice_invalid: z.boolean().nullish(),

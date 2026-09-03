@@ -93,28 +93,39 @@ charge arrives as "New purchase of €19.00". So matching an email to a payment 
 §8.6 requires the native amount because EUR moves with FX. Both rules are right, for
 different joins.
 
-**Access: `gws`, scoped to `gmail.readonly` only.** It is the Gmail API with credentials
-already provisioned in a GCP project inside the theodo.fr org, which means the consent
-screen can be Internal — no 7-day refresh-token expiry, no Google verification for a
-restricted scope. Verified least-privilege: Gmail succeeds, Drive returns
-`insufficientPermissions`.
+**Access: Mail.app, via AppleScript. `gws` was tried and removed.**
 
-Two implementation requirements, both learned the hard way:
+The Gmail API through the `gws` CLI worked, and was still the wrong dependency. That
+credential is shared with unrelated tooling, so re-issuing it for another purpose silently
+narrowed the scopes this needed; and the binary moved from an fnm node script to a Homebrew
+binary, which broke resolution outright. Because the reader was deliberately fail-soft,
+both failures presented identically: *no signals*, indistinguishable from a quiet week.
+A source that other work can invalidate without saying so cannot answer "does anything
+need me?".
 
-- **Resolve the binary durably.** The `gws` on an interactive PATH lives in
-  `~/.local/state/fnm_multishells/<pid>_<timestamp>/bin`, one of ~2000 per-shell
-  directories that do not exist for a launchd job. Use
-  `~/.local/share/fnm/node-versions/*/installation/bin/gws`, newest first, and put that
-  directory on `PATH` for the child — `gws` is a node script and needs its own `node`.
-- **Never run it with a stripped environment.** With `env -i` it cannot reach the keychain,
-  fails to decrypt, and *deletes* `credentials.enc`, forcing an interactive re-login.
+What makes Mail.app viable is a **Gmail-side filter**, `from:spendesk.com → label
+Spendesk`, created once. IMAP presents the label to Mail.app as a mailbox of the same name,
+so the query targets one small, deterministically-named mailbox instead of scanning every
+mailbox of every account. Measured: ~0.8s on a 16-message mailbox, ~3.7s at ~600, against
+100s+ for the unified-inbox scan. The expensive predicate — the sender match — has already
+been evaluated server-side.
 
-**Open: does the grant survive?** A previous broader grant died with `invalid_grant:
-invalid_rapt` — Google's ReAuth Proof Token, which is tied to the Workspace admin's Cloud
-session-length policy. The hypothesis is that a Gmail-only grant is not subject to it. That
-is unverified: if Theodo enforces reauth across all OAuth grants, Gmail needs periodic
-interactive login too, and the session-free path is not actually session-free. **Watch for
-a recurrence over the coming days before relying on this.**
+Requirements, learned the hard way:
+
+- **A missing mailbox must raise, not return empty.** A bad mailbox reference returns an
+  empty list in ~1.6s with no error, and empty reads as "nothing needs you". `mail.ts`
+  returns a sentinel and throws instead.
+- **Never launch Mail.app.** A scheduled job that opens a window on a sleeping desk is
+  worse than no signal. It checks whether Mail is already running and declines otherwise.
+- **`signals: null` is not `signals: []`.** With no second source there is nothing to
+  cross-check against, so "could not look" is encoded in the type and reported as a
+  failure, never as an all-clear.
+
+Historical note, kept because it justifies the decision: an earlier broader Google grant
+died with `invalid_grant: invalid_rapt` — Google's ReAuth Proof Token, tied to the
+Workspace admin's Cloud session-length policy. Removing the Google dependency removes that
+class of expiry from the fast path entirely; the Gmail filter is server-side and needs no
+token at run time.
 
 **Caveat on the subscription subject line.** It agreed with `subscription_id` on 45 of 46
 payments, but the one mismatch (€135.61) over-claimed — email said subscription, the API
@@ -165,11 +176,11 @@ before tuning the interval.
 
 ## 7. What to build
 
-1. **Gmail reader** — `src/signals/gmail.ts`. Parse the four subjects above into typed
-   events. `gws` is already installed and authenticated; treat its token as short-lived and
-   fail soft, because this must never be the reason a run dies.
-2. **Session-free `check`** — answers from Gmail + public API, never opens a browser.
-   Exit 0 = nothing needs you.
+1. ~~**Gmail reader**~~ — **done**, as `src/signals/mail.ts` + `src/signals/classify.ts`.
+   Reads the labelled mailbox from Mail.app; the subject parsing is pure and tested apart
+   from any client.
+2. **Session-free `check`** — **done**. Leads with the email answer before it opens a
+   browser, so the common question costs no login. Exit 0 = nothing needs you.
 3. **Re-order `run`** — session-free writes first, session-gated work batched and only
    attempted if a session already exists. Never open a login window from a scheduled run.
 4. **Digest rewrite** — lead with the deadline from the block-warning email. Ask for a

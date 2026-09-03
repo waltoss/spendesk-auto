@@ -14,7 +14,7 @@
 //
 // Both are loud and both run before the first write.
 import { z } from "zod";
-import type { DescriptionFn, Rule, RulesFile } from "../types.ts";
+import { VENDOR_NAMES, type DescriptionFn, type Rule, type RulesFile } from "../types.ts";
 
 const Pattern = z.instanceof(RegExp, { error: "must be a regular expression, like /^cursor$/i" });
 
@@ -26,6 +26,7 @@ export const RuleWhenSchema = z
     description: Pattern.optional(),
     currency: z.string().length(3).optional(),
     amount: z.number().optional(),
+    card: z.string().min(1).optional(),
     gcpAccount: z.string().optional(),
   })
   .refine((w) => Object.keys(w).length > 0, {
@@ -50,7 +51,7 @@ export const RuleSchema = z
         }),
       ])
       .optional(),
-    invoice: z.enum(["cursor", "gcp"]).optional(),
+    invoice: z.enum(VENDOR_NAMES).optional(),
     ask: RuleAskSchema.optional(),
   })
   .check((ctx) => {

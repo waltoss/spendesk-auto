@@ -39,6 +39,9 @@ interface QueueItemCommon {
   amount: number;
   currency: string;
   paidAt: string;
+  /** The Spendesk card the charge was made on. Null on the payables path, which cannot
+   *  see it — so a card rule simply does not match there, rather than matching wrongly. */
+  cardId: string | null;
   hoursRemaining: number | null;
   hasReceipt: boolean;
   fields: Record<string, string>;
@@ -72,7 +75,12 @@ export type QueueItem = PaymentItem | PayableItem;
 
 // ------------------------------------------------------------------------- the rules
 
-export type VendorName = "cursor" | "gcp";
+/**
+ * The single list of vendor adapters. The rules-file schema validates against this same
+ * array, so adding an adapter cannot leave a stale enum that rejects a rule naming it.
+ */
+export const VENDOR_NAMES = ["anthropic", "cursor", "gcp"] as const;
+export type VendorName = (typeof VENDOR_NAMES)[number];
 
 /** What a `description(...)` function is handed. */
 export interface RuleContext {
@@ -90,6 +98,12 @@ export interface RuleWhen {
   description?: RegExp;
   currency?: string;
   amount?: number;
+  /**
+   * A Spendesk card id. Useful where the supplier is not: a card dedicated to one project
+   * identifies the project even on a fresh authorisation, which carries no supplier and no
+   * description at all. Exact match — these are opaque ids, not names.
+   */
+  card?: string;
   /** Not in the Spendesk data — resolved from payments.google.com by amount. */
   gcpAccount?: string;
 }

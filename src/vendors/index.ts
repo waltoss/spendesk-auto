@@ -10,6 +10,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { BrowserContext, Page } from "playwright";
 import { err, ok, type InvoiceTarget, type Result, type VendorEntry, type VendorName } from "../types.ts";
+import * as anthropic from "./anthropic.ts";
 import * as cursor from "./cursor.ts";
 import * as gcp from "./gcp.ts";
 
@@ -23,7 +24,7 @@ export interface VendorAdapter {
   verify?(text: string, entry: VendorEntry): string | null;
 }
 
-const ADAPTERS: Record<VendorName, VendorAdapter> = { cursor, gcp };
+const ADAPTERS: Record<VendorName, VendorAdapter> = { anthropic, cursor, gcp };
 
 export const VENDORS = Object.keys(ADAPTERS) as VendorName[];
 

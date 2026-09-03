@@ -19,6 +19,7 @@ import { adapterFor, fetchInvoice, isVendor, VENDORS } from "./vendors/index.ts"
 import { reauth } from "./reauth.ts";
 import { runDaily } from "./run.ts";
 import { describeSchedule, schedule, unschedule } from "./schedule.ts";
+import { readSignals, blockWarning } from "./signals/index.ts";
 import * as log from "./log.ts";
 
 const argv = Bun.argv.slice(2);
@@ -91,6 +92,38 @@ async function cmdRulesCheck(): Promise<void> {
 
 async function cmdCheck(): Promise<void> {
   let bad = false;
+
+  // Deliberately first, and deliberately session-free. "Do I need to do something?" is the
+  // question asked most often, and needing to log in to answer it is the original problem
+  // (REDESIGN §3). The emails answer it with no Spendesk session at all.
+  try {
+    const { signals, source } = await readSignals({ days: 3 });
+    if (signals === null) {
+      // The only source could not be read. Reporting "no block warning" here would be a
+      // guess dressed as an all-clear, which is the failure this command exists to prevent.
+      log.fail(`could not read the notification emails (${source}) — cannot say whether anything needs you`);
+      bad = true;
+    } else {
+      const warning = blockWarning(signals);
+      const declined = signals.filter((s) => s.kind === "declined");
+      const purchases = signals.filter((s) => s.kind === "purchase");
+
+      if (warning) {
+        log.fail(`Spendesk says the card is about to be blocked: "${warning.subject}"`);
+        bad = true;
+      }
+      for (const d of declined) {
+        log.fail(`payment of ${d.amount.toFixed(2)} ${d.currency} declined (${d.at.toISOString().slice(0, 16)})`);
+        bad = true;
+      }
+      if (!warning && !declined.length) {
+        log.ok(`no block warning in the last 36h (${purchases.length} purchase email(s) in 3 days, via ${source})`);
+      }
+    }
+  } catch (e) {
+    log.fail(`email signals unavailable: ${e instanceof Error ? e.message : String(e)}`);
+    bad = true;
+  }
 
   try {
     const [schema, member] = await Promise.all([loadSchema(), resolveMember(me.email)]);

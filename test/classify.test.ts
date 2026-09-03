@@ -1,7 +1,7 @@
 // Subject-line parsing. These strings are copied verbatim from real Spendesk emails —
 // inventing them would test the test.
 import { test, expect } from "bun:test";
-import { classify, parseAmount, blockWarning, resolveGws, type Signal } from "../src/signals/gmail.ts";
+import { classify, parseAmount, blockWarning, type Signal } from "../src/signals/classify.ts";
 
 const at = new Date("2026-09-01T20:15:12Z");
 
@@ -50,11 +50,4 @@ test("a stale block warning does not count as current", () => {
   expect(blockWarning(old)).toBeNull();
   const fresh: Signal[] = [{ kind: "block-warning", at: new Date(Date.now() - 2 * 36e5), subject: "x" }];
   expect(blockWarning(fresh)).not.toBeNull();
-});
-
-test("gws resolves to a durable path, not an ephemeral per-shell one", () => {
-  const found = resolveGws();
-  if (!found) return; // gws not installed on this machine; nothing to assert
-  expect(found.bin).not.toContain("fnm_multishells");
-  expect(found.bin).toContain("node-versions");
 });

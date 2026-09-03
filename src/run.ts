@@ -10,7 +10,7 @@
 import type { BrowserContext } from "playwright";
 import { defaults, rules, me } from "./config.ts";
 import { loadSchema, resolveMember, validateRules } from "./spendesk/schema.ts";
-import { listIncompletePayments, listIncompletePayables } from "./spendesk/queue.ts";
+import { listIncompletePayments, listIncompletePayables, recentPayableAmounts } from "./spendesk/queue.ts";
 import { match, requiredFields } from "./rules.ts";
 import {
   attachReceipt,
@@ -26,6 +26,7 @@ import { sessionAlive } from "./spendesk/auth.ts";
 import { closeQuietly, openContext } from "./browser.ts";
 import { fetchInvoice, resolveGcpAccount } from "./vendors/index.ts";
 import { sendDigest } from "./notify.ts";
+import { readSignals, blockWarning } from "./signals/index.ts";
 import type { Escalation, QueueItem } from "./types.ts";
 import * as log from "./log.ts";
 
@@ -75,6 +76,44 @@ export async function runDaily({ dry }: { dry: boolean }): Promise<RunSummary> {
     queue = await listIncompletePayables({ memberId: member.id, requiredFields: required });
   }
   const incomplete = queue.filter((p) => p.completionState !== "complete");
+
+  // The queue only sees what Spendesk has minted. The notification emails see the card
+  // authorisation immediately, so they are the only thing that can tell us the queue is
+  // merely too young — which is precisely when the card is at risk and the queue looks calm.
+  const { signals, source } = await readSignals({ days: 3 });
+  if (signals === null) {
+    // There is no second source to fall back to, so this is stated plainly rather than
+    // passed over: the run is proceeding without any view of day-0 purchases.
+    log.warn(`could not read the notification emails (${source}) — this run is blind to purchases Spendesk has not minted yet`);
+  } else {
+    const warning = blockWarning(signals);
+    if (warning) {
+      log.fail(`Spendesk says the card is about to be blocked: "${warning.subject}"`);
+      log.record("block-warning", { at: warning.at.toISOString(), source });
+    }
+    for (const d of signals.filter((s) => s.kind === "declined")) {
+      log.fail(`a payment of ${d.amount.toFixed(2)} ${d.currency} was already declined (${d.at.toISOString().slice(0, 16)})`);
+    }
+    const purchases = signals.filter((s) => s.kind === "purchase");
+    if (purchases.length) log.step(`${purchases.length} purchase email(s) in the last 3 days (via ${source})`);
+
+    // Without a session we are on the payables view, which lags the card by ~41h. The useful
+    // question is not "are there fewer payables than emails" — a purchase whose payable is
+    // already complete is fine — but "did Spendesk mint anything at all for this charge?".
+    // Only an unmatched purchase is invisible to this run, and so a reason to log in.
+    if (!sessionOk && purchases.length) {
+      const minted = await recentPayableAmounts({ memberId: member.id });
+      const unseen = purchases.filter(
+        (p) => !minted.some((m) => m.currency === p.currency && Math.abs(m.amount - p.amount) < 0.005),
+      );
+      if (unseen.length) {
+        log.warn(
+          `${unseen.length} purchase email(s) with no payable yet (${unseen.map((p) => `${p.amount.toFixed(2)} ${p.currency}`).join(", ")}) — ` +
+          `the payable view lags ~41h; run: bun run reauth to work at the payment level`,
+        );
+      }
+    }
+  }
 
   log.say(
     `${member.name} · ${incomplete.length} incomplete ${sessionOk ? "payment" : "payable"}(s)${dry ? "  (dry run — nothing will be written)" : ""}`,

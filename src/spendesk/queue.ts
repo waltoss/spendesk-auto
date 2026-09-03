@@ -38,13 +38,25 @@ const FETCH_PAYMENTS = `query FetchPayments($companyId: String!, $first: Int, $f
     payments(orderBy: PAID_DATE_NULL_THEN_DESC, first: $first, filters: $filtersV1, filters_v2: $filtersV2) {
       edges { node {
         databaseId description completionState state
-        amount_declared currency_declared paid_at
+        amount_declared currency_declared paid_at created_at card_id
         invoices { total } invoice_lost invoice_invalid
         supplier { name } costCenter { name }
       } }
     }
   }
 }`;
+
+/**
+ * When the card was actually used.
+ *
+ * The ~3-day fuse starts at the card *authorisation*, not at settlement: `created_at`
+ * matches the "New purchase of ..." email to the second, while `paid_at` is the later
+ * clearance — around 12h later, and sometimes a full day. Measuring from `paid_at` would
+ * therefore report more time remaining than there is, which is the one direction that
+ * cannot be allowed to be wrong. It is also null while a payment is still `authorised`,
+ * which is exactly when the deadline is closest.
+ */
+const authorisedAt = (n: PaymentNode): string | null => n.created_at ?? n.paid_at ?? null;
 
 /** One GraphQL round trip, parsed. Both callers filter by payer — the token is company-wide. */
 export async function fetchPayments(
@@ -93,7 +105,7 @@ export async function listIncompletePayments({
   // and the cheap field is only trusted for older ones that are past saving anyway.
   const cutoff = Date.now() - windowDays * 864e5;
   const actionable = nodes.filter(
-    (n) => new Date(n.paid_at ?? 0).getTime() >= cutoff || n.completionState !== "complete",
+    (n) => new Date(authorisedAt(n) ?? 0).getTime() >= cutoff || n.completionState !== "complete",
   );
 
   for (const node of actionable) {
@@ -121,8 +133,9 @@ export async function listIncompletePayments({
       // native, already in major units here — and a string ("406.98") on the wire
       amount: Number(node.amount_declared),
       currency: node.currency_declared ?? "",
-      paidAt: (node.paid_at ?? "").slice(0, 10),
-      hoursRemaining: node.paid_at ? hoursLeftFrom(node.paid_at) : null,
+      cardId: node.card_id ?? null,
+      paidAt: (authorisedAt(node) ?? "").slice(0, 10),
+      hoursRemaining: authorisedAt(node) ? hoursLeftFrom(authorisedAt(node)!) : null,
       hasReceipt: (node.invoices?.total ?? 0) > 0,
       fields: {},
       needs,
@@ -192,6 +205,7 @@ export async function listIncompletePayables({
       amount: major(detail.amount), // native (USD 20.00), never functionalAmount
       currency: detail.currency ?? "",
       paidAt,
+      cardId: null, // the public payable view does not expose the card
       hoursRemaining: hoursLeftFrom(`${paidAt}T00:00:00Z`),
       hasReceipt: attachments.data.length > 0,
       fields,
@@ -204,6 +218,35 @@ export async function listIncompletePayables({
     });
   }
   return out.sort((a, b) => (a.hoursRemaining ?? 0) - (b.hoursRemaining ?? 0));
+}
+
+/**
+ * Amounts of every payable of the member in the recent past, complete or not.
+ *
+ * Used only to answer "has Spendesk minted anything for this purchase email yet?". The
+ * incomplete queue cannot answer that: a purchase whose payable exists and is already
+ * complete is indistinguishable there from one Spendesk has not created at all, and only
+ * the second is a reason to log in.
+ */
+export async function recentPayableAmounts({ memberId }: { memberId: string }): Promise<{ amount: number; currency: string }[]> {
+  const { payables } = await publicApiAs(SearchResponse, "/v1/payables/search", {
+    method: "POST",
+    body: {
+      limit: 100,
+      sort: "desc",
+      filters: {
+        operator: "and",
+        subfilters: [{ field: "requestor", operator: "=", value: [memberId] }],
+      },
+    },
+  });
+  const out: { amount: number; currency: string }[] = [];
+  for (const found of payables) {
+    if (found.memberId !== memberId) continue;
+    const detail = await publicApiAs(Payable, `/v1/payables/${found.id}`);
+    out.push({ amount: major(detail.amount), currency: detail.currency ?? "" });
+  }
+  return out;
 }
 
 /** Which payables does Spendesk say this paymentId produced? Used to confirm a join. */

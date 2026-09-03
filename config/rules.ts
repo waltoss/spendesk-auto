@@ -73,6 +73,20 @@ export const rules: Rule[] = [
     invoice: "gcp",
   },
 
+  // ------------------------------------------------- cards dedicated to one project
+  // Last resort for a given card, so it sits below the supplier rules above: a fresh card
+  // authorisation carries no supplier, no description and no merchant name — Spendesk fills
+  // those in only once the transaction settles, a day or more later. The card is the only
+  // thing known on day 0, and this one is used solely for Radical Academy (Anthropic API
+  // credits, and the GCP Radical Academy billing account, which the rule above claims first).
+  {
+    name: "Radical Academy card",
+    when: { card: "eniy627_5pp600" },
+    fields: { "Catégorie de dépense": "Training" },
+    description: ({ month }) => `Radical Academy — API & cloud ${month}`,
+    invoice: "anthropic",
+  },
+
   // -------------------------------------------------------- meals: ask, never guess
   // The category depends on who was there and why, which is nowhere in the transaction.
   // One reply gives both the category and the description.

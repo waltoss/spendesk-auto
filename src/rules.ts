@@ -14,7 +14,7 @@ export interface RuleSet {
 }
 
 /** What the matcher needs to know about a charge. Both queue shapes satisfy it. */
-export type Matchable = Pick<QueueItem, "supplier" | "description" | "amount" | "currency" | "paidAt">;
+export type Matchable = Pick<QueueItem, "supplier" | "description" | "amount" | "currency" | "paidAt" | "cardId">;
 
 /**
  * Which fields must be filled for Spendesk to consider a payable complete.
@@ -54,6 +54,9 @@ function matchesLocally(when: RuleWhen, payment: Matchable): boolean {
   if (when.currency && when.currency !== payment.currency) return false;
   if (when.amount !== undefined && Math.abs(when.amount - payment.amount) > 0.005) return false;
   if (when.description && !testsName(when.description, payment.description)) return false;
+  // Exact, and never true for a null card: the payables path has no card, and a rule that
+  // matched there anyway would apply a project's category to unrelated spend.
+  if (when.card && when.card !== payment.cardId) return false;
   return true;
 }
 

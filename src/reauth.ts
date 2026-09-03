@@ -44,11 +44,38 @@ interface Surface {
 }
 
 const GOOGLE_PAYMENTS = "https://payments.google.com/gp/w/u/0/home/subscriptionsandservices";
+const ANTHROPIC_BILLING = "https://platform.claude.com/settings/billing";
 
 async function cursorAlive(context: BrowserContext): Promise<boolean> {
   const page = await context.newPage();
   try {
     return !(await cursorLoggedOut(page));
+  } catch {
+    return false;
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
+/**
+ * Anthropic cannot be told apart by host: signed out, platform.claude.com serves its
+ * marketing page under the title "Billing | Claude Platform" — a URL and a title that both
+ * look like success.
+ *
+ * So this asserts a *positive* marker of the signed-in console rather than the absence of
+ * a sign-in button. Absence is what a page that has not finished rendering also looks
+ * like, and the failure would be silent in the worst direction: reporting a live session,
+ * skipping the sign-in, and leaving the invoice fetch to fail later on its own.
+ */
+async function anthropicAlive(context: BrowserContext): Promise<boolean> {
+  const page = await context.newPage();
+  try {
+    await page.goto(ANTHROPIC_BILLING, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => {});
+    await page.waitForTimeout(2000);
+    const text = await page.evaluate(() => document.body.innerText);
+    if (/Continue with (Google|email|SSO)/i.test(text)) return false;
+    return /Organization settings/i.test(text) && /Invoices?/i.test(text);
   } catch {
     return false;
   } finally {
@@ -77,7 +104,11 @@ const SURFACES: Surface[] = [
     name: "Spendesk",
     loginUrl: `${APP}/auth/login`,
     how: "Google SSO, your passkey (Touch ID), then a tap on the Spendesk phone app.",
-    alive: (context) => sessionAlive(context, { allowRefresh: true }),
+    // allowRefresh: false on purpose. The refresh path (auth.ts) revives a session by
+    // navigating to /app — which, when the session is dead, *is* the login page. It would
+    // open a real login form in front of the user and close it 4s later, before the
+    // explainer had said a word. Reviving a cold session is keep-warm's job, not this one's.
+    alive: (context) => sessionAlive(context, { allowRefresh: false }),
     recheck: (context) => sessionAlive(context, { allowRefresh: false }),
     pollMs: 2500, // one cheap API request
   },
@@ -90,6 +121,15 @@ const SURFACES: Surface[] = [
     // A full page load. Polling it hard is what got this account rate-limited once
     // ("Google has temporarily blocked your account..."), so ask rarely.
     pollMs: 20_000,
+  },
+  {
+    name: "Anthropic",
+    loginUrl: ANTHROPIC_BILLING,
+    how: "Your Anthropic console account — needed to fetch the Claude API invoices.",
+    alive: anthropicAlive,
+    recheck: anthropicAlive,
+    // A full SPA load, and the page carries an hCaptcha widget: poll it gently.
+    pollMs: 15_000,
   },
   {
     name: "Cursor",
@@ -183,6 +223,19 @@ function explainPage({ count, soonestHours }: PendingWork, dead: Surface[]): str
   `);
 }
 
+// Shown before any probing starts. Detecting three sessions means three page loads —
+// Cursor's alone is a dashboard behind a Cloudflare challenge, ~10s — and each one is
+// visible in this window. Without this, the first thing the window does is flash three
+// unexplained sites at you.
+const checkingPage = (): string =>
+  shell(`
+    <p class="eyebrow">Spendesk expense automation</p>
+    <h1>Checking your sessions\u2026</h1>
+    <p>Looking at Spendesk, Google and Cursor to see which ones still work. A few tabs may
+       open and close on their own while this happens \u2014 that is this check, not you.</p>
+    <p class="muted">This takes about ten seconds.</p>
+  `);
+
 const successPage = ({ count }: PendingWork): string =>
   shell(`
     <div class="ok">✓</div>
@@ -202,12 +255,17 @@ export async function reauth({
 }: { force?: boolean; timeoutMs?: number } = {}): Promise<boolean> {
   const context = await openContext({ headless: false, viewport: { width: 1180, height: 860 } });
   try {
+    const page = context.pages()[0] ?? (await context.newPage());
+    await page.setContent(checkingPage(), { waitUntil: "domcontentloaded" }).catch(() => {});
+
     const dead: Surface[] = [];
     for (const surface of SURFACES) {
       const alive = await surface.alive(context);
       (alive ? log.ok : log.warn)(`${surface.name}: ${alive ? "signed in" : "signed out"}`);
       if (!alive || force) dead.push(surface);
     }
+    // Each probe opened and closed a tab, which takes focus in headed Chrome. Come back.
+    await page.bringToFront().catch(() => {});
     if (!dead.length) {
       log.ok("nothing to do");
       log.record("session-alive", {});
@@ -223,8 +281,8 @@ export async function reauth({
       `Expired${days ? ` after ${days} days` : ""}: ${dead.map((s) => s.name).join(", ")}. ${work.count ?? "?"} expense(s) waiting.`,
     );
 
-    const page = context.pages()[0] ?? (await context.newPage());
     await page.setContent(explainPage(work, dead), { waitUntil: "domcontentloaded" });
+    await page.bringToFront().catch(() => {});
 
     log.say("Waiting for you to sign in (10 min)...");
     const deadline = Date.now() + timeoutMs;
