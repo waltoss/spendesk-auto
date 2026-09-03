@@ -18,7 +18,11 @@
     "unschedule": "launchctl unload ~/Library/LaunchAgents/com.theodo.spendesk.plist 2>/dev/null; rm -f ~/Library/LaunchAgents/com.theodo.spendesk.plist && echo 'Unscheduled'",
     "schedule:bun": "bun src/index.ts schedule",
     "unschedule:bun": "bun src/index.ts unschedule",
-    "schedule:show": "bun src/index.ts schedule:show"
+    "schedule:show": "bun src/index.ts schedule:show",
+    "go": "bun src/index.ts go",
+    "serve": "bun src/index.ts serve",
+    "serve:schedule": "launchctl bootout gui/$(id -u)/com.theodo.spendesk.trigger 2>/dev/null; cp launchd/com.theodo.spendesk.trigger.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.theodo.spendesk.trigger.plist && launchctl kickstart gui/$(id -u)/com.theodo.spendesk.trigger && echo \"Trigger listener: running\"",
+    "serve:unschedule": "launchctl bootout gui/$(id -u)/com.theodo.spendesk.trigger 2>/dev/null; rm -f ~/Library/LaunchAgents/com.theodo.spendesk.trigger.plist && echo \"Trigger listener stopped\""
   },
   "license": "ISC",
   "dependencies": {

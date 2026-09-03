@@ -23,17 +23,30 @@ export interface DigestOptions {
   /** null when the browser was never opened — a dry run has not proved the session dead. */
   sessionOk?: boolean | null;
   completed?: number;
+  /** One-click link that signs in and finishes the run. Null when no session is needed. */
+  actionUrl?: string | null;
+  /**
+   * Things that need saying but are not queue items — above all, a charge whose payable
+   * Spendesk has not minted yet. Without a session that charge is invisible to the queue,
+   * so it would otherwise produce no email at all, on the very days it matters most.
+   */
+  notes?: string[];
 }
 
-export function digestText(escalations: Escalation[], { sessionOk = true, completed = 0 }: DigestOptions = {}): string {
+export function digestText(
+  escalations: Escalation[],
+  { sessionOk = true, completed = 0, actionUrl = null, notes = [] }: DigestOptions = {},
+): string {
   const soonest = Math.min(...escalations.map((e) => e.payment.hoursRemaining ?? Infinity));
   const lines: string[] = [];
 
-  lines.push(
-    escalations.length === 1
-      ? "One expense needs you before your card is blocked."
-      : `${escalations.length} expenses need you before your card is blocked.`,
-  );
+  if (escalations.length)
+    lines.push(
+      escalations.length === 1
+        ? "One expense needs you before your card is blocked."
+        : `${escalations.length} expenses need you before your card is blocked.`,
+    );
+  for (const note of notes) lines.push(note);
   if (Number.isFinite(soonest)) lines.push(`The most urgent: ${hours(soonest)}.`);
   lines.push("");
 
@@ -58,8 +71,19 @@ export function digestText(escalations: Escalation[], { sessionOk = true, comple
   lines.push("");
 
   if (sessionOk === false) {
-    lines.push("Spendesk also needs you to sign in again — descriptions could not be written.");
-    lines.push("Run: bun run reauth   (Touch ID, then approve on the Spendesk phone app)");
+    lines.push("Spendesk needs you to sign in again — descriptions cannot be written without it.");
+    if (actionUrl) {
+      // The whole point of the link: no command to type, and no window opens until this
+      // is clicked. One use only, and superseded by the next digest.
+      lines.push("");
+      lines.push("Finish these automatically — click here, then Touch ID:");
+      lines.push(`  ${actionUrl}`);
+      lines.push("");
+      lines.push("A Chrome window opens for the sign-in, everything is completed, and you");
+      lines.push("get a second email with whatever still needs you.");
+    } else {
+      lines.push("Run: bun run reauth   (Touch ID, then approve on the Spendesk phone app)");
+    }
     lines.push("");
   }
 
@@ -74,16 +98,17 @@ export interface SendOptions extends DigestOptions {
 
 export async function sendDigest(
   escalations: Escalation[],
-  { sessionOk = true, preview = false, completed = 0 }: SendOptions = {},
+  { sessionOk = true, preview = false, completed = 0, actionUrl = null, notes = [] }: SendOptions = {},
 ): Promise<void> {
   const first = escalations[0];
-  if (!first) return;
+  if (!first && !notes.length) return;
 
-  const subject =
-    escalations.length === 1
+  const subject = !first
+    ? "Spendesk: a recent charge is not visible yet"
+    : escalations.length === 1
       ? `Spendesk: 1 expense needs you (${hours(first.payment.hoursRemaining)})`
       : `Spendesk: ${escalations.length} expenses need you`;
-  const body = digestText(escalations, { sessionOk, completed });
+  const body = digestText(escalations, { sessionOk, completed, actionUrl, notes });
 
   // A dry run shows the email it would send rather than a summary of it: the wording is
   // the part worth reviewing.
@@ -110,7 +135,7 @@ export async function sendDigest(
   try {
     await $`osascript -e ${script}`.quiet();
     log.ok(`digest sent to ${TO}`);
-    log.record("digest", { to: TO, items: escalations.length });
+    log.record("digest", { to: TO, items: escalations.length, notes: notes.length });
   } catch (e) {
     // A failed email must not look like a successful run.
     const message = e instanceof Error ? e.message : String(e);

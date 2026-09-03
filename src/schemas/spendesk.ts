@@ -85,6 +85,11 @@ export const Payable = z.looseObject({
   userId: z.string().nullish(),
   amount: z.number().nullish(),
   currency: z.string().nullish(),
+  /** What the card was actually billed, in the company currency. Spendesk's notification
+   *  emails quote this, not the native amount, so it is the only field an email can be
+   *  matched against (DESIGN §2 trap). */
+  functionalAmount: z.number().nullish(),
+  functionalCurrency: z.string().nullish(),
   exportedAt: z.string().nullish(),
   costCenterId: z.string().nullish(),
   description: z.string().nullish(),

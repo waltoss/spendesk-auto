@@ -4,6 +4,8 @@
 //   bun run run          the daily job
 //   bun run dry          decide everything, write nothing
 //   bun run check        session + rules validity; exit 1 if broken
+//   bun run go           sign in, then run — what the emailed link triggers
+//   bun run serve        the listener behind that link
 //   bun run reauth       explainer -> sign in -> success
 //   bun run rules:check  resolve every label against the live schema
 //   bun run fetch gcp --amount 266.49
@@ -18,6 +20,7 @@ import { closeQuietly, openContext } from "./browser.ts";
 import { adapterFor, fetchInvoice, isVendor, VENDORS } from "./vendors/index.ts";
 import { reauth } from "./reauth.ts";
 import { runDaily } from "./run.ts";
+import { serve } from "./trigger.ts";
 import { describeSchedule, schedule, unschedule } from "./schedule.ts";
 import { readSignals, blockWarning } from "./signals/index.ts";
 import * as log from "./log.ts";
@@ -25,6 +28,24 @@ import * as log from "./log.ts";
 const argv = Bun.argv.slice(2);
 const command = argv[0] ?? "run";
 const DRY = argv.includes("--dry");
+
+// --------------------------------------------------------------------------- go
+/**
+ * What the emailed link triggers: sign in, then finish the run.
+ *
+ * Kept as one command so the listener has nothing to orchestrate — and so the sequence is
+ * identical whether it was reached from an email or typed by hand.
+ */
+async function cmdGo(): Promise<void> {
+  const signedIn = await reauth({});
+  if (!signedIn) {
+    // Not an error: the window may simply have been closed. The digest already said what
+    // was waiting, and the next run will offer the link again.
+    log.warn("sign-in did not complete — nothing was changed");
+    return;
+  }
+  await runDaily({ dry: false });
+}
 
 // --------------------------------------------------------------------- rules:check
 
@@ -183,6 +204,13 @@ const commands: Record<string, () => Promise<void>> = {
   },
   fetch: cmdFetch,
   check: cmdCheck,
+  go: cmdGo,
+  // Bun.serve holds the event loop open by itself; the never-resolving promise just makes
+  // that explicit, so the process cannot be exited by the dispatcher finishing.
+  serve: async () => {
+    serve();
+    await new Promise<void>(() => {});
+  },
   reauth: async () => {
     await reauth({ force: argv.includes("--force") });
   },

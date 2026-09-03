@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The listener behind the "Complete them now" link in the digest email.
+
+  KeepAlive, not a timer. This is the distinction that killed keep-warm: StartInterval
+  firings that fall during sleep are dropped outright (man launchd.plist), so a timer can
+  never hold anything across a night. A resident process simply sleeps with the Mac and is
+  there again on wake — and launchd restarts it if it dies or if you log back in.
+
+  It binds 127.0.0.1 only and requires a one-use token, so the exposure is other processes
+  on this Mac, not the network.
+
+  Install with `bun run serve:schedule`, remove with `bun run serve:unschedule`.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.theodo.spendesk.trigger</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/waltoss/.bun/bin/bun</string>
+    <string>src/index.ts</string>
+    <string>serve</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/waltoss/Code/Theodo/Playground/spendesk-auto</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- If the port is taken it exits immediately; without this launchd would respawn it in
+       a tight loop rather than leaving a readable log. -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/waltoss/Code/Theodo/Playground/spendesk-auto/logs/trigger.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/waltoss/Code/Theodo/Playground/spendesk-auto/logs/trigger.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/waltoss/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>

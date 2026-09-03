@@ -10,7 +10,7 @@
 import type { BrowserContext } from "playwright";
 import { defaults, rules, me } from "./config.ts";
 import { loadSchema, resolveMember, validateRules } from "./spendesk/schema.ts";
-import { listIncompletePayments, listIncompletePayables, recentPayableAmounts } from "./spendesk/queue.ts";
+import { listIncompletePayments, listIncompletePayables, recentBilledAmounts } from "./spendesk/queue.ts";
 import { match, requiredFields } from "./rules.ts";
 import {
   attachReceipt,
@@ -26,6 +26,7 @@ import { sessionAlive } from "./spendesk/auth.ts";
 import { closeQuietly, openContext } from "./browser.ts";
 import { fetchInvoice, resolveGcpAccount } from "./vendors/index.ts";
 import { sendDigest } from "./notify.ts";
+import { mintToken, actionUrl, ensureListening } from "./trigger.ts";
 import { readSignals, blockWarning } from "./signals/index.ts";
 import type { Escalation, QueueItem } from "./types.ts";
 import * as log from "./log.ts";
@@ -77,6 +78,8 @@ export async function runDaily({ dry }: { dry: boolean }): Promise<RunSummary> {
   }
   const incomplete = queue.filter((p) => p.completionState !== "complete");
 
+  const notes: string[] = [];
+
   // The queue only sees what Spendesk has minted. The notification emails see the card
   // authorisation immediately, so they are the only thing that can tell us the queue is
   // merely too young — which is precisely when the card is at risk and the queue looks calm.
@@ -102,14 +105,20 @@ export async function runDaily({ dry }: { dry: boolean }): Promise<RunSummary> {
     // already complete is fine — but "did Spendesk mint anything at all for this charge?".
     // Only an unmatched purchase is invisible to this run, and so a reason to log in.
     if (!sessionOk && purchases.length) {
-      const minted = await recentPayableAmounts({ memberId: member.id });
+      const minted = await recentBilledAmounts({ memberId: member.id });
       const unseen = purchases.filter(
         (p) => !minted.some((m) => m.currency === p.currency && Math.abs(m.amount - p.amount) < 0.005),
       );
       if (unseen.length) {
-        log.warn(
-          `${unseen.length} purchase email(s) with no payable yet (${unseen.map((p) => `${p.amount.toFixed(2)} ${p.currency}`).join(", ")}) — ` +
-          `the payable view lags ~41h; run: bun run reauth to work at the payment level`,
+        const what = unseen.map((p) => `${p.amount.toFixed(2)} ${p.currency}`).join(", ");
+        log.warn(`${unseen.length} purchase email(s) with no payable yet (${what}) — the payable view lags ~41h`);
+        // Said out loud, not just logged. Without a session these charges are invisible to
+        // the queue, so this is the only notice that anything exists at all — and it is
+        // exactly the case a sign-in fixes, because the payment view sees them on day 0.
+        const plural = unseen.length > 1;
+        notes.push(
+          `${unseen.length} recent charge${plural ? "s are" : " is"} not in Spendesk's accounting` +
+            ` view yet (${what}). Signing in reaches ${plural ? "them" : "it"} now, roughly a day early.`,
         );
       }
     }
@@ -121,6 +130,13 @@ export async function runDaily({ dry }: { dry: boolean }): Promise<RunSummary> {
   if (!incomplete.length) {
     log.ok("nothing to do");
     log.record("run", { dry, incomplete: 0, via });
+    // "Nothing in the queue" is not "nothing happening": a charge from this morning has no
+    // payable yet, and this is the one path that would otherwise end in silence.
+    if (notes.length) {
+      let link: string | null = null;
+      if (!sessionOk && !dry && (await ensureListening())) link = actionUrl(await mintToken());
+      await sendDigest([], { sessionOk, preview: dry, notes, actionUrl: link });
+    }
     await closeQuietly(context);
     return { done: 0, escalations: 0, incomplete: 0, via };
   }
@@ -305,7 +321,20 @@ export async function runDaily({ dry }: { dry: boolean }): Promise<RunSummary> {
     escalations: escalations.length,
   });
 
-  if (escalations.length) await sendDigest(escalations, { sessionOk, preview: dry, completed: done.length });
+  // A link is offered only when signing in would actually change the outcome: something
+  // is escalated *because* there is no session. Sending it otherwise would train the habit
+  // of clicking a login link that achieves nothing.
+  let link: string | null = null;
+  if ((escalations.length || notes.length) && !sessionOk && !dry) {
+    const fixableBySigningIn = notes.length > 0 || escalations.some((e) => /session/i.test(e.reason));
+    if (fixableBySigningIn) {
+      // Never send a link that cannot be clicked: fall back to the typed command instead.
+      if (await ensureListening()) link = actionUrl(await mintToken());
+      else log.warn("the trigger listener is not running — sending the digest without a one-click link");
+    }
+  }
+  if (escalations.length || notes.length)
+    await sendDigest(escalations, { sessionOk, preview: dry, completed: done.length, actionUrl: link, notes });
 
   return { done: done.length, escalations: escalations.length, incomplete: incomplete.length, via };
 }

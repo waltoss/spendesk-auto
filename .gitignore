@@ -6,3 +6,6 @@ invoices/
 test/fixtures/*.pdf
 logs/
 test-ts/fixtures/*.pdf
+
+# one-use token for the emailed action link
+.spendesk-trigger

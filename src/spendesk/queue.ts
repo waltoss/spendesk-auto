@@ -221,14 +221,20 @@ export async function listIncompletePayables({
 }
 
 /**
- * Amounts of every payable of the member in the recent past, complete or not.
+ * Billed amounts of every payable of the member in the recent past, complete or not.
  *
  * Used only to answer "has Spendesk minted anything for this purchase email yet?". The
  * incomplete queue cannot answer that: a purchase whose payable exists and is already
  * complete is indistinguishable there from one Spendesk has not created at all, and only
  * the second is a reason to log in.
+ *
+ * Deliberately the *functional* amount. A USD 120.00 charge arrives by email as "€103.76",
+ * so comparing against the native amount never matches and every dollar charge would be
+ * reported as missing for ever. This is the opposite of the rule for matching invoices,
+ * where the native amount is required because EUR moves with FX (DESIGN §8.6). Both rules
+ * are right, for different joins.
  */
-export async function recentPayableAmounts({ memberId }: { memberId: string }): Promise<{ amount: number; currency: string }[]> {
+export async function recentBilledAmounts({ memberId }: { memberId: string }): Promise<{ amount: number; currency: string }[]> {
   const { payables } = await publicApiAs(SearchResponse, "/v1/payables/search", {
     method: "POST",
     body: {
@@ -244,7 +250,10 @@ export async function recentPayableAmounts({ memberId }: { memberId: string }): 
   for (const found of payables) {
     if (found.memberId !== memberId) continue;
     const detail = await publicApiAs(Payable, `/v1/payables/${found.id}`);
-    out.push({ amount: major(detail.amount), currency: detail.currency ?? "" });
+    out.push({
+      amount: major(detail.functionalAmount ?? detail.amount),
+      currency: detail.functionalCurrency ?? detail.currency ?? "",
+    });
   }
   return out;
 }
