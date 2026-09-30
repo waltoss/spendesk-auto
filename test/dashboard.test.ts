@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { hostAllowed, sameOrigin } from "../src/dashboard/index.ts";
 import { esc } from "../src/dashboard/page.ts";
-import { isInvoiceName, runRows, spendeskSignIn, vendorSignIn } from "../src/dashboard/state.ts";
+import { activeBlockWarning, isInvoiceName, runRows, spendeskSignIn, vendorSignIn } from "../src/dashboard/state.ts";
 import { profileHolder } from "../src/jobs.ts";
 import type { RunEvent } from "../src/log.ts";
 
@@ -95,4 +95,21 @@ test("a stale Chrome profile lock (dead pid) does not block jobs", () => {
   symlinkSync(`host-${process.pid}`, live);
   expect(profileHolder(live)).toBe(process.pid);
   expect(profileHolder(path.join(dir, "absent"))).toBeNull();
+});
+
+test("the block warning clears once a real payment-view run leaves nothing incomplete", () => {
+  const now = new Date("2026-09-30T14:00:00Z").getTime();
+  const warning = ev("2026-09-29T07:04:00Z", "block-warning");
+  const run = (at: string, extra: Record<string, unknown>) =>
+    ev(at, "run", { dry: false, via: "payments", incomplete: 1, done: 1, escalations: 0, ...extra });
+  expect(activeBlockWarning([warning], now)).toBe(warning.at);
+  // Resolved: every incomplete charge was completed.
+  expect(activeBlockWarning([warning, run("2026-09-30T13:34:00Z", {})], now)).toBeNull();
+  // The payables view lags two days — an empty queue there proves nothing.
+  expect(activeBlockWarning([warning, run("2026-09-30T13:34:00Z", { via: "payables", incomplete: 0, done: 0 })], now)).toBe(warning.at);
+  // Neither does a dry run, nor one that still left something for you.
+  expect(activeBlockWarning([warning, run("2026-09-30T13:34:00Z", { dry: true })], now)).toBe(warning.at);
+  expect(activeBlockWarning([warning, run("2026-09-30T13:34:00Z", { escalations: 1, done: 0 })], now)).toBe(warning.at);
+  // A run from before the warning resolves nothing.
+  expect(activeBlockWarning([run("2026-09-29T06:00:00Z", {}), warning], now)).toBe(warning.at);
 });

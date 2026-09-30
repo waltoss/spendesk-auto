@@ -90,7 +90,12 @@ export async function runDaily({ dry }: { dry: boolean }): Promise<RunSummary> {
     log.warn(`could not read the notification emails (${source}) — this run is blind to purchases Spendesk has not minted yet`);
   } else {
     const warning = blockWarning(signals);
-    if (warning) {
+    // The email stays in the inbox for a day and a half after you have fixed what it was
+    // about. Only the payment view can say it is fixed — the payables view lags two days,
+    // so an empty queue there proves nothing.
+    if (warning && sessionOk && incomplete.length === 0) {
+      log.ok(`Spendesk's block warning (${warning.at.toISOString().slice(0, 16)}) is resolved: nothing is incomplete`);
+    } else if (warning) {
       log.fail(`Spendesk says the card is about to be blocked: "${warning.subject}"`);
       log.record("block-warning", { at: warning.at.toISOString(), source });
     }

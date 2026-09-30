@@ -158,6 +158,26 @@ function row(runId: string, list: RunEvent[]): RunRow {
   };
 }
 
+/**
+ * The card-block warning, unless it has since been dealt with. Resolved means a later real
+ * run on the payment view — the one that sees charges from day 0 — left nothing for you.
+ * A payables-view run cannot say so: it lags the card by two days.
+ */
+export function activeBlockWarning(events: RunEvent[], now = Date.now(), windowHours = 36): string | null {
+  const warning = findLast(events, (e) => e.event === "block-warning");
+  if (!warning || now - ms(warning.at) > windowHours * 3600e3) return null;
+  const resolved = events.some(
+    (e) =>
+      e.event === "run" &&
+      !e["dry"] &&
+      e["via"] === "payments" &&
+      ms(e.at) > ms(warning.at) &&
+      Number(e["incomplete"] ?? 0) === Number(e["done"] ?? 0) &&
+      !Number(e["escalations"] ?? 0),
+  );
+  return resolved ? null : warning.at;
+}
+
 /** The last time the automation was clicked from an email, and the last card-block warning. */
 export function lastOf(events: RunEvent[], event: string): RunEvent | null {
   return findLast(events, (e) => e.event === event) ?? null;

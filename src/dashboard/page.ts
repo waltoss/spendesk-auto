@@ -164,7 +164,7 @@ export function dashboardPage(d: DashboardData): string {
 
 function alerts(d: DashboardData): string {
   const out: string[] = [];
-  if (d.lastBlockWarning && d.now - new Date(d.lastBlockWarning).getTime() < 36 * 3600e3)
+  if (d.lastBlockWarning)
     out.push(
       `<div class="alert bad">Spendesk warned that the card will be blocked — ${when(d.lastBlockWarning)}. Missing receipts or fields.</div>`,
     );

@@ -28,6 +28,7 @@ import {
   type JobKind,
 } from "../jobs.ts";
 import {
+  activeBlockWarning,
   invoiceFiles,
   isInvoiceName,
   lastOf,
@@ -108,7 +109,7 @@ function render(): string {
     invoices: invoiceFiles(INVOICES, events),
     rules: ruleRows(rules, events),
     defaults,
-    lastBlockWarning: lastOf(events, "block-warning")?.at ?? null,
+    lastBlockWarning: activeBlockWarning(events),
     lastEmailClick: lastOf(events, "trigger")?.at ?? null,
     schedule: "daily run at 08:00 (launchd)",
   });
