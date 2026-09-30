@@ -28,7 +28,7 @@ import { fetchInvoice, resolveGcpAccount } from "./vendors/index.ts";
 import { sendDigest } from "./notify.ts";
 import { mintToken, actionUrl, ensureListening } from "./trigger.ts";
 import { readSignals, blockWarning } from "./signals/index.ts";
-import type { Escalation, QueueItem } from "./types.ts";
+import type { Escalation, ItemTrace, QueueItem } from "./types.ts";
 import * as log from "./log.ts";
 
 // The fuse can already have burned through: say so rather than printing "-105h left".
@@ -146,169 +146,213 @@ export async function runDaily({ dry }: { dry: boolean }): Promise<RunSummary> {
 
   try {
     for (const payment of incomplete) {
-      log.head(
-        `${payment.supplier ?? "(no supplier)"} · ${money(payment)} · ${payment.paidAt} · ${hours(payment.hoursRemaining)}`,
-      );
-      log.step(`needs: ${payment.needs.map((n) => (n.kind === "field" ? n.label : n.kind)).join(", ")}`);
+      const trace: ItemTrace = {
+        key: payment.kind === "payment" ? payment.paymentId : payment.payableId,
+        view: payment.kind,
+        supplier: payment.supplier,
+        amount: payment.amount,
+        currency: payment.currency,
+        paidAt: payment.paidAt,
+        hoursRemaining: payment.hoursRemaining,
+        needs: payment.needs.map((n) => (n.kind === "field" ? n.label : n.kind)),
+        rule: null,
+        decision: null,
+        actions: [],
+        outcome: "escalated",
+        reasons: [],
+      };
+      const act = (what: string, ok: boolean, detail?: string): void => {
+        trace.actions.push(detail === undefined ? { what, ok } : { what, ok, detail });
+      };
+      try {
+        log.head(
+          `${payment.supplier ?? "(no supplier)"} · ${money(payment)} · ${payment.paidAt} · ${hours(payment.hoursRemaining)}`,
+        );
+        log.step(`needs: ${payment.needs.map((n) => (n.kind === "field" ? n.label : n.kind)).join(", ")}`);
 
-      let decision = match(payment, { defaults, rules });
+        let decision = match(payment, { defaults, rules });
+        trace.decision = decision.kind;
 
-      // A GCP payable cannot name its own billing account; payments.google.com can, by
-      // amount. Resolve, then match again.
-      if (decision.kind === "resolve") {
-        if (dry) {
-          log.step(
-            `would look up the GCP billing account for ${money(payment)} (candidates: ${decision.candidates.map((r) => r.name).join(", ")})`,
-          );
-          escalations.push({ payment, reason: "GCP billing account not yet resolved (dry run)" });
-          continue;
-        }
-        const account = await resolveGcpAccount(context, payment).catch((e: unknown) => {
-          log.warn(`GCP lookup failed: ${e instanceof Error ? e.message : String(e)}`);
-          return null;
-        });
-        if (!account) {
-          escalations.push({ payment, reason: "could not tell which GCP billing account this charge belongs to" });
-          continue;
-        }
-        log.step(`GCP billing account ${account}`);
-        decision = match(payment, { defaults, rules }, { gcpAccount: account });
-      }
-
-      if (decision.kind === "unknown") {
-        log.warn(`no rule matches${decision.note ? ` — ${decision.note}` : ""}`);
-        escalations.push({ payment, reason: decision.note ?? "no rule matches this supplier" });
-        continue;
-      }
-
-      if (decision.kind === "ask") {
-        log.warn(`needs a human: "${decision.question}"`);
-        escalations.push({ payment, reason: decision.question, ask: true, rule: decision.rule });
-        continue;
-      }
-
-      if (decision.kind === "resolve") {
-        // Only reachable if the second match round-tripped back to "resolve", which would
-        // mean the account we just found matches no rule. Escalate rather than loop.
-        escalations.push({ payment, reason: "the GCP billing account could not be matched to a rule" });
-        continue;
-      }
-
-      // ------------------------------------------------------------------ fields
-      const missing = payment.needs.flatMap((n) => (n.kind === "field" ? [n.label] : []));
-      const toSet = Object.fromEntries(
-        Object.entries(decision.fields).filter(([label]) => missing.some((m) => m.trim() === label.trim())),
-      );
-      if (Object.keys(toSet).length) {
-        try {
-          if (payment.kind === "payment") {
-            await setPaymentFields(context, payment.paymentId, toSet, { schema, memberId: member.id, dry });
-          } else {
-            await setFields(payment.payableId, toSet, {
-              schema,
-              memberId: member.id,
-              expectedSearchState: payment.searchState,
-              dry,
-            });
+        // A GCP payable cannot name its own billing account; payments.google.com can, by
+        // amount. Resolve, then match again.
+        if (decision.kind === "resolve") {
+          if (dry) {
+            log.step(
+              `would look up the GCP billing account for ${money(payment)} (candidates: ${decision.candidates.map((r) => r.name).join(", ")})`,
+            );
+            escalations.push({ payment, reason: "GCP billing account not yet resolved (dry run)" });
+            continue;
           }
-          log.ok(
-            `${dry ? "would set" : "set"} ${Object.entries(toSet)
+          const account = await resolveGcpAccount(context, payment).catch((e: unknown) => {
+            log.warn(`GCP lookup failed: ${e instanceof Error ? e.message : String(e)}`);
+            return null;
+          });
+          if (!account) {
+            escalations.push({ payment, reason: "could not tell which GCP billing account this charge belongs to" });
+            continue;
+          }
+          log.step(`GCP billing account ${account}`);
+          trace.gcpAccount = account;
+          decision = match(payment, { defaults, rules }, { gcpAccount: account });
+          trace.decision = decision.kind;
+        }
+
+        if (decision.kind === "unknown") {
+          log.warn(`no rule matches${decision.note ? ` — ${decision.note}` : ""}`);
+          escalations.push({ payment, reason: decision.note ?? "no rule matches this supplier" });
+          continue;
+        }
+
+        if (decision.kind === "ask") {
+          trace.rule = decision.rule.name;
+          log.warn(`needs a human: "${decision.question}"`);
+          escalations.push({ payment, reason: decision.question, ask: true, rule: decision.rule });
+          continue;
+        }
+
+        if (decision.kind === "resolve") {
+          // Only reachable if the second match round-tripped back to "resolve", which would
+          // mean the account we just found matches no rule. Escalate rather than loop.
+          escalations.push({ payment, reason: "the GCP billing account could not be matched to a rule" });
+          continue;
+        }
+
+        trace.rule = decision.rule.name;
+
+        // ------------------------------------------------------------------ fields
+        const missing = payment.needs.flatMap((n) => (n.kind === "field" ? [n.label] : []));
+        const toSet = Object.fromEntries(
+          Object.entries(decision.fields).filter(([label]) => missing.some((m) => m.trim() === label.trim())),
+        );
+        if (Object.keys(toSet).length) {
+          try {
+            if (payment.kind === "payment") {
+              await setPaymentFields(context, payment.paymentId, toSet, { schema, memberId: member.id, dry });
+            } else {
+              await setFields(payment.payableId, toSet, {
+                schema,
+                memberId: member.id,
+                expectedSearchState: payment.searchState,
+                dry,
+              });
+            }
+            const summary = Object.entries(toSet)
               .map(([k, v]) => `${k.split(")").pop()?.trim() ?? k}=${v}`)
-              .join(", ")}`,
-          );
-        } catch (e) {
-          const how = e instanceof GuardError ? "guard refused" : "failed";
-          const message = e instanceof Error ? e.message : String(e);
-          log.fail(`fields ${how}: ${message}`);
-          escalations.push({ payment, reason: `could not set fields: ${message}` });
-          continue;
-        }
-      }
-
-      // ------------------------------------------------------------- description
-      if (payment.needs.some((n) => n.kind === "description") && decision.description) {
-        if (dry) {
-          log.ok(`would set description "${decision.description}"`);
-        } else if (!sessionOk) {
-          escalations.push({ payment, reason: "description needs a Spendesk session — please re-authenticate" });
-        } else {
-          // A payment knows its own id; a payable has to be joined back to one.
-          const paymentId = await paymentIdFor(context, payment, { memberId: member.id });
-          if (!paymentId) {
-            log.fail("could not join this payable to its payment id");
-            escalations.push({
-              payment,
-              reason: "could not identify the payment behind this payable, so the description was not written",
-            });
-          } else {
-            await setDescription(context, paymentId, decision.description, { dry });
-            log.ok(`description "${decision.description}"`);
+              .join(", ");
+            log.ok(`${dry ? "would set" : "set"} ${summary}`);
+            act(dry ? "would set fields" : "set fields", true, summary);
+          } catch (e) {
+            const how = e instanceof GuardError ? "guard refused" : "failed";
+            const message = e instanceof Error ? e.message : String(e);
+            log.fail(`fields ${how}: ${message}`);
+            act("set fields", false, `${how}: ${message}`);
+            escalations.push({ payment, reason: `could not set fields: ${message}` });
+            continue;
           }
         }
-      }
 
-      // ----------------------------------------------------------------- receipt
-      if (payment.needs.some((n) => n.kind === "receipt")) {
-        if (!decision.invoice) {
-          log.warn("no receipt and no vendor adapter to fetch one");
-          escalations.push({ payment, reason: "the receipt is missing and cannot be fetched automatically" });
-        } else if (dry) {
-          log.ok(`would fetch the invoice from ${decision.invoice} and attach it`);
-        } else {
-          const got = await fetchInvoice(context, decision.invoice, payment);
-          if (!got.ok) {
-            log.fail(`invoice: ${got.error}`);
-            // A dead vendor session must re-arm the vendor probe, which reauth otherwise
-            // skips for a week. Without this the two would deadlock: the fetch says "run
-            // reauth", and reauth says "nothing to do".
-            if (/not signed in/i.test(got.error)) log.record("vendor-signed-out", { vendor: decision.invoice });
-            escalations.push({ payment, reason: `could not retrieve the invoice: ${got.error}` });
+        // ------------------------------------------------------------- description
+        if (payment.needs.some((n) => n.kind === "description") && decision.description) {
+          if (dry) {
+            log.ok(`would set description "${decision.description}"`);
+            act("would set description", true, decision.description);
+          } else if (!sessionOk) {
+            act("set description", false, "needs a Spendesk session");
+            escalations.push({ payment, reason: "description needs a Spendesk session — please re-authenticate" });
           } else {
-            if (payment.kind === "payment")
-              await attachReceiptToPayment(context, payment.paymentId, got.value.file, { dry });
-            else await attachReceipt(payment.payableId, got.value.file, { dry });
-            log.ok(`attached ${got.value.file.split("/").pop()}`);
+            // A payment knows its own id; a payable has to be joined back to one.
+            const paymentId = await paymentIdFor(context, payment, { memberId: member.id });
+            if (!paymentId) {
+              log.fail("could not join this payable to its payment id");
+              act("set description", false, "could not join this payable to its payment id");
+              escalations.push({
+                payment,
+                reason: "could not identify the payment behind this payable, so the description was not written",
+              });
+            } else {
+              await setDescription(context, paymentId, decision.description, { dry });
+              log.ok(`description "${decision.description}"`);
+              act("set description", true, decision.description);
+            }
           }
         }
-      }
 
-      // ------------------------------------------------------------------ verify
-      // Never model completeness — ask. Spendesk's control rules are the authority and
-      // they disagree with any offline approximation (they required nothing at all on one
-      // GCP payment and two fields on another).
-      if (!dry) {
-        const paymentId = sessionOk ? await paymentIdFor(context, payment, { memberId: member.id }) : null;
-        const state = paymentId && sessionOk ? await completionState(context, paymentId).catch(() => null) : null;
+        // ----------------------------------------------------------------- receipt
+        if (payment.needs.some((n) => n.kind === "receipt")) {
+          if (!decision.invoice) {
+            log.warn("no receipt and no vendor adapter to fetch one");
+            act("fetch invoice", false, "no vendor adapter for this rule");
+            escalations.push({ payment, reason: "the receipt is missing and cannot be fetched automatically" });
+          } else if (dry) {
+            log.ok(`would fetch the invoice from ${decision.invoice} and attach it`);
+            act("would fetch invoice", true, decision.invoice);
+          } else {
+            const got = await fetchInvoice(context, decision.invoice, payment);
+            if (!got.ok) {
+              log.fail(`invoice: ${got.error}`);
+              act(`fetch invoice (${decision.invoice})`, false, got.error);
+              // A dead vendor session must re-arm the vendor probe, which reauth otherwise
+              // skips for a week. Without this the two would deadlock: the fetch says "run
+              // reauth", and reauth says "nothing to do".
+              if (/not signed in/i.test(got.error)) log.record("vendor-signed-out", { vendor: decision.invoice });
+              escalations.push({ payment, reason: `could not retrieve the invoice: ${got.error}` });
+            } else {
+              if (payment.kind === "payment")
+                await attachReceiptToPayment(context, payment.paymentId, got.value.file, { dry });
+              else await attachReceipt(payment.payableId, got.value.file, { dry });
+              log.ok(`attached ${got.value.file.split("/").pop()}`);
+              act(`attach invoice (${decision.invoice})`, true, got.value.file.split("/").pop());
+            }
+          }
+        }
 
-        if (state === "complete") {
-          log.ok("verified complete (Spendesk agrees)");
-          done.push(payment);
-        } else if (state) {
-          log.warn(`Spendesk still says "${state}"`);
-          escalations.push({ payment, reason: `Spendesk still considers this incomplete ("${state}")` });
-        } else if (payment.kind === "payable") {
-          // No session: fall back to what the public API can see.
-          const v = await verifyPayable(payment.payableId, { requiredFields: required });
-          const still = [
-            ...v.missingFields,
-            ...(v.descriptionOk ? [] : ["description"]),
-            ...(v.receiptOk ? [] : ["receipt"]),
-          ];
-          if (!still.length) {
-            log.ok("verified complete (public API)");
+        // ------------------------------------------------------------------ verify
+        // Never model completeness — ask. Spendesk's control rules are the authority and
+        // they disagree with any offline approximation (they required nothing at all on one
+        // GCP payment and two fields on another).
+        if (!dry) {
+          const paymentId = sessionOk ? await paymentIdFor(context, payment, { memberId: member.id }) : null;
+          const state = paymentId && sessionOk ? await completionState(context, paymentId).catch(() => null) : null;
+
+          if (state === "complete") {
+            log.ok("verified complete (Spendesk agrees)");
+            act("verify", true, "Spendesk says complete");
             done.push(payment);
+          } else if (state) {
+            log.warn(`Spendesk still says "${state}"`);
+            act("verify", false, `Spendesk says "${state}"`);
+            escalations.push({ payment, reason: `Spendesk still considers this incomplete ("${state}")` });
+          } else if (payment.kind === "payable") {
+            // No session: fall back to what the public API can see.
+            const v = await verifyPayable(payment.payableId, { requiredFields: required });
+            const still = [
+              ...v.missingFields,
+              ...(v.descriptionOk ? [] : ["description"]),
+              ...(v.receiptOk ? [] : ["receipt"]),
+            ];
+            if (!still.length) {
+              log.ok("verified complete (public API)");
+              act("verify", true, "complete (public API)");
+              done.push(payment);
+            } else {
+              log.warn(`still incomplete: ${still.join(", ")}`);
+              act("verify", false, `still missing: ${still.join(", ")}`);
+              if (!escalations.some((e) => e.payment.kind === "payable" && e.payment.payableId === payment.payableId))
+                escalations.push({ payment, reason: `still missing: ${still.join(", ")}` });
+            }
           } else {
-            log.warn(`still incomplete: ${still.join(", ")}`);
-            if (!escalations.some((e) => e.payment.kind === "payable" && e.payment.payableId === payment.payableId))
-              escalations.push({ payment, reason: `still missing: ${still.join(", ")}` });
+            // A payment with no oracle answer has no payable to fall back on — the public
+            // API cannot see it yet. Say so instead of asserting success. (The JavaScript
+            // version called verifyPayable(null) here, which 404s and kills the whole run.)
+            log.warn("Spendesk's control rules did not answer for this payment");
+            escalations.push({ payment, reason: "could not confirm with Spendesk that this is now complete" });
           }
-        } else {
-          // A payment with no oracle answer has no payable to fall back on — the public
-          // API cannot see it yet. Say so instead of asserting success. (The JavaScript
-          // version called verifyPayable(null) here, which 404s and kills the whole run.)
-          log.warn("Spendesk's control rules did not answer for this payment");
-          escalations.push({ payment, reason: "could not confirm with Spendesk that this is now complete" });
         }
+      } finally {
+        // Every exit — each `continue` included — leaves one record of what happened.
+        trace.reasons = escalations.filter((e) => e.payment === payment).map((e) => e.reason);
+        trace.outcome = done.includes(payment) ? "complete" : trace.reasons.length || !dry ? "escalated" : "dry";
+        log.record("item", { dry, ...trace });
       }
     }
   } finally {

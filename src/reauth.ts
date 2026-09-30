@@ -308,6 +308,7 @@ export async function reauth({
       for (const surface of vendors) {
         const alive = await surface.alive(context);
         (alive ? log.ok : log.warn)(`${surface.name}: ${alive ? "signed in" : "signed out"}`);
+        log.record("vendor-status", { vendor: surface.name, alive });
         if (!alive || force) dead.push(surface);
       }
       if (!vendors.some((v) => dead.includes(v))) log.record("vendors-checked", {});
@@ -352,6 +353,7 @@ export async function reauth({
         nextCheck.set(surface.name, Date.now() + surface.pollMs);
         if (await surface.recheck(context)) {
           log.ok(`${surface.name}: signed in`);
+          if (surface !== spendesk) log.record("vendor-status", { vendor: surface.name, alive: true });
           stillDead.delete(surface.name);
         }
       }

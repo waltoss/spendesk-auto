@@ -22,19 +22,47 @@ bun start             # the daily job
 bun run check         # is the session alive and do the rules still resolve?
 bun run reauth        # sign in again (Touch ID + a tap on the Spendesk phone app)
 bun run rules:check   # validate config/rules.ts against the live Spendesk schema
-bun test              # guards, matching, PDF verification (24 tests)
+bun test              # guards, matching, PDF verification, dashboard refusals
 bun run typecheck     # tsc --noEmit
 
 bun run fetch gcp --amount 266.49    # try one vendor adapter on its own
+bun run fetch gcp --amount 500 --date 2026-09-25   # a threshold debit (same amount every time)
+bun run dashboard     # open http://127.0.0.1:8787/
 ```
+
+## Dashboard
+
+The trigger listener (`bun run serve`, kept resident by launchd) also serves a dashboard
+at <http://127.0.0.1:8787/>:
+
+- **sign-ins**: Spendesk, Google, Anthropic and Cursor, as last recorded in the run log.
+  Opening the page probes nothing, because polling payments.google.com is what got the
+  account rate-limited (DESIGN §10). "Check sessions" and "Sign in" are buttons;
+- **run**: dry run, run now, sign in then run, check rules, list a vendor's invoices. Each
+  button starts a job whose output streams to `/jobs/<id>` (kept in `logs/jobs/`). Only one
+  runs at a time, because they all share one Chrome profile. A job is also refused while the
+  08:00 run holds the profile (Chrome's `SingletonLock`);
+- **waiting in Spendesk**: the incomplete payables, read live through the public API (no
+  session needed), with what a run would do to each;
+- **last run / history**: every run from `logs/runs.jsonl`, and per charge the rule it
+  matched, what was written, which invoice was attached and why anything was escalated;
+- **invoices** and **rules**: what is in `invoices/`, and the rules as the matcher reads
+  them, with how many charges each rule claimed in the last 30 days.
+
+It is loopback-only, and still guarded against the websites you visit. The Host header must
+name the listener (against DNS rebinding), buttons must be same-origin with a per-process
+CSRF token, and the page refuses to be framed.
 
 ## Layout
 
 ```
 config/rules.ts          the only file to edit for a new supplier or rule
 src/
-  index.ts               CLI: run | fetch | check | reauth | rules:check | schedule
+  index.ts               CLI: run | fetch | check | reauth | rules:check | schedule | serve
   run.ts                 the daily job itself (also called by the scheduler)
+  trigger.ts             the resident listener: emailed link (/go) + dashboard
+  jobs.ts                starts CLI commands from the listener, one at a time
+  dashboard/             state (from the run log), live queue, HTML
   job.ts                 Bun.cron entry point (`scheduled()`)
   schedule.ts            launchd vs Bun.cron
   config.ts              loads and validates config/rules.ts

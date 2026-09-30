@@ -15,10 +15,11 @@
 // that made `StartInterval` useless (see REDESIGN §6) cannot arise.
 import { timingSafeEqual } from "node:crypto";
 import * as log from "./log.ts";
+import { start } from "./jobs.ts";
+import { handle as dashboard, hostAllowed } from "./dashboard/index.ts";
 
 const PORT = Number(Bun.env["SPENDESK_TRIGGER_PORT"] ?? 8787);
 const TOKEN_FILE = `${import.meta.dir}/../.spendesk-trigger`;
-const ROOT = `${import.meta.dir}/..`;
 
 /**
  * A fresh token per email, so a link in an old digest stops working once a newer one is
@@ -100,8 +101,11 @@ export function serve(): void {
     hostname: "127.0.0.1", // never reachable from another machine
     port: PORT,
     async fetch(req) {
+      // Before anything else, for every route: see src/dashboard/index.ts.
+      if (!hostAllowed(req, PORT)) return new Response("forbidden", { status: 403 });
       const url = new URL(req.url);
-      if (req.method !== "GET" || url.pathname !== "/go") return new Response("not found", { status: 404 });
+      if (url.pathname !== "/go") return (await dashboard(req, PORT)) ?? new Response("not found", { status: 404 });
+      if (req.method !== "GET") return new Response("not found", { status: 404 });
 
       // Only a real click. A page you happen to be visiting can issue requests to
       // localhost, but those arrive as fetch/image loads — `navigate`/`document` means a
@@ -119,29 +123,33 @@ export function serve(): void {
         return page("Link expired", "<p>This link has been superseded by a newer email, or is not valid.</p>", 403);
       }
 
+      // Detached: the browser must not sit on a spinner for the length of a full run, and
+      // the run outlives this request. Its own digest reports what happened. Started
+      // before the token is spent: if a run already holds the browser, the link stays
+      // good for when it has finished.
+      const started = start("go", "email");
+      if (!started.ok)
+        return page(
+          "Already busy",
+          `<p>Nothing was started: ${started.reason}.</p>
+           <p>Try this link again in a few minutes, or follow it on the <a href="/">dashboard</a>.</p>`,
+          409,
+        );
+
       // Spend the token: a link is good for one use, so a forwarded or cached email
       // cannot start a second run.
       await Bun.write(TOKEN_FILE, "");
       log.record("trigger", {});
       log.ok("trigger: starting sign-in and run");
 
-      // Detached: the browser must not sit on a spinner for the length of a full run, and
-      // the run outlives this request. Its own digest reports what happened.
-      Bun.spawn(["bun", "src/index.ts", "go"], {
-        cwd: ROOT,
-        stdout: Bun.file(`${ROOT}/logs/trigger.log`),
-        stderr: Bun.file(`${ROOT}/logs/trigger.log`),
-        env: process.env,
-      }).unref();
-
       return page(
         "Signing you in…",
         `<p>A Chrome window is opening. Sign in with Touch ID, then approve on the Spendesk app.</p>
          <p>Your expenses are completed straight after, and you get an email with anything
             still needing you.</p>
-         <p style="color:#71717a;font-size:13.5px">You can close this tab.</p>`,
+         <p style="color:#71717a;font-size:13.5px">Follow it on the <a href="/jobs/${started.job.id}">dashboard</a>, or close this tab.</p>`,
       );
     },
   });
-  log.ok(`trigger listening on http://127.0.0.1:${server.port}/go`);
+  log.ok(`trigger listening on http://127.0.0.1:${server.port}/go — dashboard at http://127.0.0.1:${server.port}/`);
 }

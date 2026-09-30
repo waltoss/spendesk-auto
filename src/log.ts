@@ -62,3 +62,22 @@ export function lastEvent(event: string): RunEvent | null {
   }
   return null;
 }
+
+/** Every event, oldest first. For the dashboard, which reads the ledger rather than probing. */
+export function readEvents(): RunEvent[] {
+  try {
+    return readFileSync(RUNS, "utf8")
+      .split("\n")
+      .flatMap((line) => {
+        if (!line.trim()) return [];
+        try {
+          const parsed: unknown = JSON.parse(line);
+          return parsed && typeof parsed === "object" ? [parsed as RunEvent] : [];
+        } catch {
+          return []; // one torn line must not hide the rest of the ledger
+        }
+      });
+  } catch {
+    return [];
+  }
+}

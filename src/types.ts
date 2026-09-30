@@ -156,6 +156,30 @@ export interface Escalation {
   rule?: Rule;
 }
 
+// ------------------------------------------------------------------------ run traces
+
+/**
+ * What one run did with one charge, logged as an "item" event. The console output says
+ * the same thing, but only to whoever was watching; this is what the dashboard reads.
+ */
+export interface ItemTrace {
+  /** paymentId or payableId — whichever view the run was on. */
+  key: string;
+  view: QueueItem["kind"];
+  supplier: string | null;
+  amount: number;
+  currency: string;
+  paidAt: string;
+  hoursRemaining: number | null;
+  needs: string[];
+  rule: string | null;
+  decision: Decision["kind"] | null;
+  gcpAccount?: string;
+  actions: { what: string; ok: boolean; detail?: string }[];
+  outcome: "complete" | "escalated" | "dry";
+  reasons: string[];
+}
+
 // --------------------------------------------------------------------------- vendors
 
 /** One invoice as a vendor's own UI lists it, before we have decided anything. */
