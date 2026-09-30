@@ -124,3 +124,23 @@ test("a supplier rule still wins over the card it happens to share", () => {
   );
   expect(d.kind).toBe("resolve"); // GCP still needs its billing account resolved
 });
+
+test("a settled Anthropic charge on the project card keeps its category and its invoice", () => {
+  // Once the charge settles Spendesk names the supplier. The generic "Anthropic / Claude"
+  // rule then used to claim it — IT Costs, and no adapter, so the receipt never came.
+  const d = expectKind(
+    match(payment({ cardId: "eniy627_5pp600", supplier: "Anthropic", amount: 108.04, currency: "USD" }), {
+      defaults,
+      rules,
+    }),
+    "auto",
+  );
+  expect(d.fields["Catégorie de dépense"]).toBe("Training");
+  expect(d.invoice).toBe("anthropic");
+});
+
+test("an Anthropic payable with no card can still fetch its invoice", () => {
+  const d = expectKind(match(payment({ supplier: "Anthropic", amount: 108.04, currency: "USD" }), { defaults, rules }), "auto");
+  expect(d.rule.name).toBe("Anthropic / Claude");
+  expect(d.invoice).toBe("anthropic");
+});

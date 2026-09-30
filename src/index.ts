@@ -154,11 +154,12 @@ async function cmdCheck(): Promise<void> {
 // so it needs a way to be tested against a charge you already know about.
 //
 //   bun run fetch gcp --amount 266.49 --currency EUR
+//   bun run fetch gcp --amount 500 --date 2026-09-25   # a threshold debit: 500 € every time
 //   bun run fetch gcp                     # just list what is there
 async function cmdFetch(): Promise<void> {
   const vendor = argv[1];
   if (!vendor || !isVendor(vendor))
-    throw new Error(`usage: fetch <${VENDORS.join("|")}> [--amount N] [--currency EUR]`);
+    throw new Error(`usage: fetch <${VENDORS.join("|")}> [--amount N] [--currency EUR] [--date YYYY-MM-DD]`);
 
   const flag = (name: string): string | null => {
     const i = argv.indexOf(`--${name}`);
@@ -167,6 +168,7 @@ async function cmdFetch(): Promise<void> {
   const rawAmount = flag("amount");
   const amount = rawAmount === null ? null : Number(rawAmount);
   const currency = flag("currency") ?? "EUR";
+  const paidAt = flag("date") ?? undefined;
   const headless = !argv.includes("--headed");
 
   const context = await openContext({ headless });
@@ -179,13 +181,13 @@ async function cmdFetch(): Promise<void> {
     log.head(`${entries.length} invoice(s) at ${vendor}`);
     for (const e of entries)
       log.step(
-        `${(e.account ?? "").padEnd(22)} ${(e.date ?? "?").padEnd(18)} ${String(e.amount ?? "?").padStart(10)} ${e.currency ?? ""}`,
+        `${(e.account ?? "").padEnd(22)} ${(e.date ?? "?").padEnd(18)} ${String(e.amount ?? "?").padStart(10)} ${e.currency ?? ""}${e.ref ? `  threshold debit ${e.ref}` : ""}`,
       );
     await page.close().catch(() => {});
 
     if (amount === null) return;
 
-    const got = await fetchInvoice(context, vendor, { amount, currency }, { entries });
+    const got = await fetchInvoice(context, vendor, { amount, currency, paidAt }, { entries });
     log.say();
     if (!got.ok) {
       log.fail(got.error);

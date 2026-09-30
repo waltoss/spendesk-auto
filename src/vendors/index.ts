@@ -96,6 +96,28 @@ export function statesAmount(text: string, amount: number): boolean {
   return forms.some((f) => flat.includes(f.replace(/\s/g, "")));
 }
 
+/** How far a vendor's own date may sit from Spendesk's: settlement and time zones shift it. */
+const DATE_SLACK_DAYS = 3;
+
+/**
+ * Which listed entries could be this charge? Amount and currency first. Only if that
+ * leaves a tie are dated entries narrowed to the charge's own day: GCP threshold debits are
+ * the same 500 € every time, and amount alone would refuse all of them. Entries dated by
+ * period rather than by day ("1–30 sept. 2026") drop out of a tie, never into one.
+ */
+export function candidatesFor(entries: VendorEntry[], target: InvoiceTarget): VendorEntry[] {
+  const byAmount = entries.filter(
+    (e) => Math.abs(Number(e.amount) - target.amount) < 0.005 && (!e.currency || e.currency === target.currency),
+  );
+  if (byAmount.length < 2 || !target.paidAt) return byAmount;
+  const day = new Date(`${target.paidAt}T00:00:00Z`).getTime();
+  return byAmount.filter(
+    (e) =>
+      /^\d{4}-\d{2}-\d{2}$/.test(e.date ?? "") &&
+      Math.abs(new Date(`${e.date}T00:00:00Z`).getTime() - day) <= DATE_SLACK_DAYS * 864e5,
+  );
+}
+
 const discard = (file: string): Promise<void> => Bun.file(file).unlink().catch(() => {});
 
 export type InvoiceResult = Result<{ file: string; verified: true }>;
@@ -126,9 +148,7 @@ export async function fetchInvoice(
     // "0 matches" as if we had looked.
     if (!entries.length) return err(`${vendor} listed no invoices at all — the page did not render as expected`);
 
-    const targets = entries.filter(
-      (e) => Math.abs(Number(e.amount) - payment.amount) < 0.005 && (!e.currency || e.currency === payment.currency),
-    );
+    const targets = candidatesFor(entries, payment);
     const target = targets[0];
     if (targets.length !== 1 || !target)
       return err(
@@ -160,13 +180,13 @@ export async function fetchInvoice(
   }
 }
 
-/** Which GCP billing account produced a given charge? Matched by amount, never assumed. */
+/** Which GCP billing account produced a given charge? Matched by amount (then day), never assumed. */
 export async function resolveGcpAccount(context: BrowserContext, payment: InvoiceTarget): Promise<string | null> {
   const page = await context.newPage();
   try {
     if (await gcp.loggedOut(page)) throw new Error("not signed in to Google");
     const entries = await gcp.list(page);
-    const hits = entries.filter((e) => Math.abs(Number(e.amount) - payment.amount) < 0.005);
+    const hits = candidatesFor(entries, payment);
     const hit = hits[0];
     if (hits.length !== 1 || !hit) return null;
     return hit.account ?? null;

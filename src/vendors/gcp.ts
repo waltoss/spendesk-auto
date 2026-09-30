@@ -17,6 +17,12 @@
 // Charges are not strictly monthly — each account has a payment threshold (500 € / 100 €)
 // that triggers off-cycle charges. Retrieval is therefore driven by "Spendesk has a GCP
 // payable with no receipt", never by a calendar.
+//
+// A threshold debit ("Débit lié au seuil") matches no period's closing balance and has no
+// facture of its own: the facture comes at month end and covers the whole period. What it
+// does have is a "Reçu du paiement" — its row in the timeline is a link that opens the
+// receipt as an HTML page in a new tab, printed to PDF here. That receipt is what gets
+// attached; missing these is how a 500 € charge sat escalated for five days.
 import path from "node:path";
 import type { BrowserContext, Frame, Page } from "playwright";
 import type { VendorEntry } from "../types.ts";
@@ -39,6 +45,25 @@ async function settle(page: Page): Promise<void> {
     if (/Google Cloud/i.test(await innerText(page))) return;
     await page.waitForTimeout(1000);
   }
+}
+
+/** "1 234,56 €" or "−500,00 €" -> "1234.56" / "500.00". The sign is the timeline's, not ours. */
+const euros = (shown: string): string =>
+  shown
+    .replace(/[\s  €−-]/g, "")
+    .replace(/\.(?=\d{3}\b)/g, "")
+    .replace(",", ".");
+
+const MONTHS: Record<string, number> = {
+  janv: 1, févr: 2, mars: 3, avr: 4, mai: 5, juin: 6, juil: 7, août: 8, sept: 9, oct: 10, nov: 11, déc: 12,
+};
+
+/** "25 sept. 2026" -> "2026-09-25", or null for anything else (a period, a typo). */
+export function isoDay(shown: string): string | null {
+  const m = /^(\d{1,2})\s+([a-zéû]+)\.?\s+(\d{4})$/i.exec(shown.trim());
+  const month = m ? MONTHS[m[2]!.toLowerCase()] : undefined;
+  if (!m || !month) return null;
+  return `${m[3]}-${String(month).padStart(2, "0")}-${m[1]!.padStart(2, "0")}`;
 }
 
 interface BillingAccount {
@@ -118,16 +143,53 @@ export async function list(page: Page): Promise<VendorEntry[]> {
         account: acc.account,
         href: acc.href,
         date,
-        // "1 234,56 €" -> "1234.56"
-        amount: (amounts[k] ?? "")
-          .replace(/[\s €]/g, "")
-          .replace(/\.(?=\d{3}\b)/g, "")
-          .replace(",", "."),
+        amount: euros(amounts[k] ?? ""),
         currency: "EUR",
       }),
     );
+
+    // Threshold debits are only itemised in the timeline: one more click per account, and
+    // still inside payments.google.com. Not optional — without it a threshold charge can
+    // be neither attributed to an account nor given a receipt.
+    const timeline = await openTimeline(page, frame);
+    for (const debit of await thresholdDebits(timeline))
+      out.push({
+        account: acc.account,
+        href: acc.href,
+        ref: debit.ref,
+        date: isoDay(debit.date) ?? debit.date,
+        amount: euros(debit.amount),
+        currency: "EUR",
+      });
   }
   return out;
+}
+
+/** "Afficher les transactions..." opens the timeline, in an iframe of its own. */
+async function openTimeline(page: Page, summary: Frame): Promise<Frame> {
+  await summary.getByText(/Afficher les transactions/i).first().click({ timeout: 20_000 });
+  for (let i = 0; i < 30; i++) {
+    const f = page.frames().find((fr) => /timelineview/.test(fr.url()));
+    // Every period, billed or not, prints a closing balance — "Documents" alone would
+    // wait forever on an account that has never been invoiced.
+    if (f && /Solde de clôture/i.test(await innerText(f))) return f;
+    await page.waitForTimeout(1000);
+  }
+  throw new Error("the transactions timeline never rendered");
+}
+
+/** The "Débit lié au seuil" rows: date, payment number, amount — as printed. */
+async function thresholdDebits(timeline: Frame): Promise<{ date: string; ref: string; amount: string }[]> {
+  return timeline.evaluate(() => {
+    const txt = (e: Element): string => ((e as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+    return [...document.querySelectorAll("tr")].flatMap((tr) => {
+      const cells = [...tr.querySelectorAll("td")].map(txt);
+      const description = cells.find((c) => /^Débit lié au seuil/i.test(c));
+      const ref = description ? /\b(A\d{10,})\b/.exec(description)?.[1] : undefined;
+      if (!ref) return [];
+      return [{ date: cells[0] ?? "", ref, amount: cells[cells.length - 1] ?? "" }];
+    });
+  });
 }
 
 /**
@@ -136,28 +198,22 @@ export async function list(page: Page): Promise<VendorEntry[]> {
  * account — three accounts on one page makes that a real failure mode, not a hypothetical.
  */
 export function verify(text: string, entry: VendorEntry): string | null {
+  // A payment receipt names its payment number, not the billing account.
+  if (entry.ref) return text.includes(entry.ref) ? null : `the receipt does not name payment ${entry.ref}`;
   if (!entry.account) return null;
   return text.includes(entry.account) ? null : `the PDF does not name billing account ${entry.account}`;
 }
 
 export async function download(context: BrowserContext, page: Page, entry: VendorEntry): Promise<string> {
   if (!entry.href) throw new Error("this GCP entry has no account-detail page to go back to");
-  if (page.url() !== entry.href) {
-    await page.goto(entry.href, { waitUntil: "domcontentloaded", timeout: 60_000 });
-    await page.waitForTimeout(3000);
-  }
+  // Always reload: list() leaves the page on some account's timeline, and the URL alone
+  // does not say which view is showing.
+  await page.goto(entry.href, { waitUntil: "domcontentloaded", timeout: 60_000 });
+  await page.waitForTimeout(3000);
 
   // The summary card has no download control; the timeline view does.
-  const summary = await detailFrame(page);
-  await summary.getByText(/Afficher les transactions/i).first().click({ timeout: 20_000 });
-
-  let timeline: Frame | null = null;
-  for (let i = 0; i < 30 && !timeline; i++) {
-    const f = page.frames().find((fr) => /timelineview/.test(fr.url()));
-    timeline = f && /Documents/i.test(await innerText(f)) ? f : null;
-    if (!timeline) await page.waitForTimeout(1000);
-  }
-  if (!timeline) throw new Error("the transactions timeline never rendered");
+  const timeline = await openTimeline(page, await detailFrame(page));
+  if (entry.ref) return receipt(context, page, timeline, entry);
 
   const label = await factureFor(timeline, entry.amount);
   if (!label) throw new Error(`no facture found for a closing balance of ${String(entry.amount).replace(".", ",")} €`);
@@ -249,4 +305,28 @@ async function expandCardFor(timeline: Frame, label: string): Promise<boolean> {
     await Bun.sleep(1000);
   }
   return false;
+}
+
+/**
+ * A threshold debit's "Reçu du paiement". Its row is a link that opens the receipt in a new
+ * tab — an HTML page, not a PDF (fetching the URL returns text/html), so it is printed.
+ * `page.pdf()` exists only in headless Chrome, which is how every run opens the browser.
+ */
+async function receipt(context: BrowserContext, page: Page, timeline: Frame, entry: VendorEntry): Promise<string> {
+  const ref = entry.ref!;
+  const opened = context.waitForEvent("page", { timeout: 30_000 });
+  await timeline.locator("a", { hasText: ref }).first().click({ timeout: 20_000 });
+  const tab = await opened;
+  try {
+    await tab.waitForLoadState("networkidle", { timeout: 25_000 }).catch(() => {});
+    for (let i = 0; i < 15 && !(await innerText(tab)).includes(ref); i++) await page.waitForTimeout(1000);
+    if (!/Reçu du paiement/i.test(await innerText(tab))) throw new Error(`payment ${ref} did not open a receipt`);
+    const file = path.join(OUT, `gcp-receipt-${entry.date ?? "undated"}-${Number(entry.amount).toFixed(2)}.pdf`);
+    await tab.pdf({ path: file, format: "A4", printBackground: true }).catch((e: unknown) => {
+      throw new Error(`could not print the receipt for ${ref} (headed browser?): ${e instanceof Error ? e.message : e}`);
+    });
+    return file;
+  } finally {
+    await tab.close().catch(() => {});
+  }
 }

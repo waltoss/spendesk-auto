@@ -29,11 +29,25 @@ export const rules: Rule[] = [
     description: ({ month }) => `Cursor — abonnement IA ${month}`,
     invoice: "cursor",
   },
+  // Anthropic API credits for Radical Academy. Must sit above "Anthropic / Claude": once a
+  // charge settles, Spendesk names the supplier, and the generic rule would then claim it
+  // with the wrong category — and, before this rule existed, with no invoice adapter.
+  {
+    name: "Anthropic — Radical Academy card",
+    when: { supplier: /^(anthropic|claude)$/i, card: "eniy627_5pp600" },
+    fields: { "Catégorie de dépense": "Training" },
+    description: ({ month }) => `Radical Academy — API & cloud ${month}`,
+    invoice: "anthropic",
+  },
   {
     name: "Anthropic / Claude",
     when: { supplier: /^(anthropic|claude)$/i },
     fields: { "Catégorie de dépense": "IT Costs" },
     description: ({ month }) => `Claude — abonnement IA ${month}`,
+    // The payables path has no card, so a Radical Academy charge lands here when there is
+    // no session. The adapter matches on amount and verifies the PDF, so a charge it does
+    // not bill (a claude.ai subscription) escalates rather than attaching the wrong file.
+    invoice: "anthropic",
   },
   {
     name: "OpenAI",

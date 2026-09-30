@@ -166,6 +166,13 @@ export interface VendorEntry {
   href?: string;
   /** GCP billing account id; a document that does not name it is the wrong document. */
   account?: string | null;
+  /**
+   * GCP threshold debit: the payment number ("A89749075942351207"). Such a charge has no
+   * facture of its own — only a payment receipt, which names this number and not the
+   * billing account.
+   */
+  ref?: string;
+  /** ISO (YYYY-MM-DD) when the vendor gives a single day; otherwise as printed ("1–30 sept. 2026"). */
   date: string | null;
   /** Kept as the vendor printed it; compared with Number(). */
   amount: string | number | null;
@@ -177,4 +184,6 @@ export interface VendorEntry {
 export interface InvoiceTarget {
   amount: number;
   currency: string;
+  /** YYYY-MM-DD. Breaks a tie between equal amounts — GCP threshold debits are all 500 €. */
+  paidAt?: string;
 }
