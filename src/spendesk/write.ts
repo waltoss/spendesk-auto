@@ -191,7 +191,9 @@ export async function attachReceipt(
   for (const [k, v] of Object.entries(fields)) form.append(k, v);
   form.append("file", blob, path.basename(file));
 
-  const res = await fetch(target, { method: grant.method ?? "POST", body: form });
+  // Timed out, not retried: an upload that stalled may still have landed, and a retry is
+  // how the same receipt ends up attached twice.
+  const res = await fetch(target, { method: grant.method ?? "POST", body: form, signal: AbortSignal.timeout(120_000) });
   if (!res.ok) throw new Error(`receipt upload → HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
   return { uploaded: path.basename(file), bytes: contentLength };
 }

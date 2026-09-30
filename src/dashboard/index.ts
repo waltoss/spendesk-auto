@@ -15,7 +15,18 @@
 import path from "node:path";
 import { defaults, rules } from "../config.ts";
 import * as log from "../log.ts";
-import { blocker, getJob, isJobKind, isRunning, JOBS, listJobs, readJobLog, start, type JobKind } from "../jobs.ts";
+import {
+  blocker,
+  getJob,
+  isJobKind,
+  isRunning,
+  JOBS,
+  lastOutputAt,
+  listJobs,
+  readJobLog,
+  start,
+  type JobKind,
+} from "../jobs.ts";
 import {
   invoiceFiles,
   isInvoiceName,
@@ -125,7 +136,7 @@ export async function handle(req: Request, port: number): Promise<Response | nul
     if (pathname.startsWith("/jobs/")) {
       const job = getJob(decodeURIComponent(pathname.slice("/jobs/".length)));
       if (!job) return html(messagePage("No such job", "It may have been pruned — only the last 60 are kept."), 404);
-      return html(jobPage(job, readJobLog(job.id), isRunning(job)));
+      return html(jobPage(job, readJobLog(job.id), isRunning(job), lastOutputAt(job.id)));
     }
     if (pathname.startsWith("/invoices/")) {
       const name = decodeURIComponent(pathname.slice("/invoices/".length));

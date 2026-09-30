@@ -335,7 +335,11 @@ export const errorFragment = (message: string): string =>
 
 // -------------------------------------------------------------------------- job page
 
-export function jobPage(job: Job, output: string, running: boolean): string {
+/** A run prints something at least every minute or two; five silent minutes means stuck. */
+const QUIET_MINUTES = 5;
+
+export function jobPage(job: Job, output: string, running: boolean, lastOutput: string | null = null): string {
+  const quiet = running && lastOutput !== null && Date.now() - new Date(lastOutput).getTime() > QUIET_MINUTES * 6e4;
   const status = running
     ? badge("warn", "running")
     : job.endedAt === null
@@ -349,6 +353,12 @@ export function jobPage(job: Job, output: string, running: boolean): string {
      <section><p class="muted" style="margin:0 0 10px">started ${when(job.startedAt)} from ${esc(job.via)}${
        job.endedAt ? ` · finished ${when(job.endedAt)}` : ""
      }${running ? " · this page refreshes itself" : ""}</p>
+     ${
+       quiet
+         ? `<div class="alert warn">No output for ${esc(ago(lastOutput).replace(" ago", ""))} — this job is probably stuck.
+              Stop it with <code>kill ${esc(job.pid)}</code>, then start it again from the dashboard.</div>`
+         : ""
+     }
      <pre>${esc(output) || "(no output yet)"}</pre></section>`,
     { refreshSeconds: running ? 2 : undefined },
   );

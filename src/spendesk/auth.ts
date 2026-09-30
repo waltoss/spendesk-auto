@@ -37,14 +37,49 @@ async function credentials(): Promise<{ id: string; secret: string }> {
   return { id, secret };
 }
 
+/** A stalled connection must fail, not hang: a run left waiting forever never sends its digest. */
+const TIMEOUT_MS = 30_000;
+const RETRY_DELAYS_MS = [2_000, 5_000, 15_000];
+
+/**
+ * fetch with a timeout, and — for requests that are safe to repeat — retries.
+ *
+ * Both failures seen in the run log are transient: "getaddrinfo ENOTFOUND" at 08:00, when
+ * the Mac has just woken and the network is not up yet (five runs lost in a week), and a
+ * connection that stalls without ever answering (a sign-in-then-run left waiting forever).
+ * Only reads are retried. A write that timed out may still have landed, and sending it
+ * again is how an attachment ends up on a payable twice.
+ */
+async function send(url: string, init: RequestInit, { retry }: { retry: boolean }): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
+      if (retry && res.status >= 500 && attempt < RETRY_DELAYS_MS.length) {
+        await res.body?.cancel();
+        await Bun.sleep(RETRY_DELAYS_MS[attempt]!);
+        continue;
+      }
+      return res;
+    } catch (e) {
+      if (!retry || attempt >= RETRY_DELAYS_MS.length) {
+        const what = e instanceof Error && e.name === "TimeoutError" ? `no answer after ${TIMEOUT_MS / 1000}s` : e;
+        throw new Error(`${init.method ?? "GET"} ${new URL(url).pathname} failed: ${what instanceof Error ? what.message : String(what)}`);
+      }
+      await Bun.sleep(RETRY_DELAYS_MS[attempt]!);
+    }
+  }
+}
+
 async function accessToken(): Promise<string> {
   if (token && Date.now() < tokenExpiresAt) return token;
   const { id, secret } = await credentials();
   const basic = Buffer.from(`${id}:${secret}`).toString("base64");
-  const res = await fetch(`${PUBLIC_API}/v1/auth/token`, {
-    method: "POST",
-    headers: { authorization: `Basic ${basic}` },
-  });
+  // A token request changes nothing server-side, so it is as safe to repeat as a read.
+  const res = await send(
+    `${PUBLIC_API}/v1/auth/token`,
+    { method: "POST", headers: { authorization: `Basic ${basic}` } },
+    { retry: true },
+  );
   if (!res.ok) throw new Error(`Spendesk token request failed: HTTP ${res.status} ${await res.text()}`);
   const body = parsed(TokenResponse, await res.json(), "POST /v1/auth/token");
   token = body.access_token;
@@ -66,14 +101,20 @@ export interface PublicApiOptions {
  * own message, which is usually precise.
  */
 export async function publicApi(pathname: string, { method = "GET", body }: PublicApiOptions = {}): Promise<unknown> {
-  const res = await fetch(`${PUBLIC_API}${pathname}`, {
-    method,
-    headers: {
-      authorization: `Bearer ${await accessToken()}`,
-      ...(body ? { "content-type": "application/json" } : {}),
+  // A search is a POST only because its filters are a body; it reads.
+  const idempotent = method === "GET" || (method === "POST" && pathname.endsWith("/search"));
+  const res = await send(
+    `${PUBLIC_API}${pathname}`,
+    {
+      method,
+      headers: {
+        authorization: `Bearer ${await accessToken()}`,
+        ...(body ? { "content-type": "application/json" } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
     },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
+    { retry: idempotent },
+  );
   const text = await res.text();
   if (!res.ok) throw new Error(`${method} ${pathname} → HTTP ${res.status}: ${text.slice(0, 400)}`);
   return text ? (JSON.parse(text) as unknown) : null;

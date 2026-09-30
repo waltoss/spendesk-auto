@@ -10,7 +10,7 @@
 // Each job leaves two files in logs/jobs/: its output, and a small JSON record. They are
 // read back from disk rather than kept in memory, so the listing survives the listener
 // being restarted by launchd.
-import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import * as log from "./log.ts";
 
@@ -99,6 +99,15 @@ export function listJobs(): Job[] {
 }
 
 export const getJob = (id: string): Job | null => listJobs().find((j) => j.id === id) ?? null;
+
+/** When the job last wrote anything — a running job that has gone quiet is probably stuck. */
+export function lastOutputAt(id: string): string | null {
+  try {
+    return statSync(logPath(id)).mtime.toISOString();
+  } catch {
+    return null;
+  }
+}
 
 export function readJobLog(id: string): string {
   try {
